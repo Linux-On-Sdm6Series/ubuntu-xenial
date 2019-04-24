@@ -4856,7 +4856,6 @@ EXPORT_SYMBOL vmlinux 0x405c1144	get_seconds
 EXPORT_SYMBOL vmlinux 0x40701ef0	blk_queue_unprep_rq
 EXPORT_SYMBOL vmlinux 0x4072ec56	inode_set_bytes
 EXPORT_SYMBOL vmlinux 0x407429a1	jbd2_journal_load
-EXPORT_SYMBOL vmlinux 0x40849177	icmp_send
 EXPORT_SYMBOL vmlinux 0x40973662	sysctl_udp_mem
 EXPORT_SYMBOL vmlinux 0x409873e3	tty_termios_baud_rate
 EXPORT_SYMBOL vmlinux 0x40a27c37	scsi_dev_info_remove_list
@@ -7377,6 +7376,7 @@ EXPORT_SYMBOL vmlinux 0xb3606937	mmc_align_data_size
 EXPORT_SYMBOL vmlinux 0xb36f331e	sg_miter_stop
 EXPORT_SYMBOL vmlinux 0xb37bee52	rename_lock
 EXPORT_SYMBOL vmlinux 0xb37c6022	dev_mc_unsync
+EXPORT_SYMBOL vmlinux 0xb3832f46	__icmp_send
 EXPORT_SYMBOL vmlinux 0xb384511e	seq_write
 EXPORT_SYMBOL vmlinux 0xb3a52a7e	__blk_mq_end_request
 EXPORT_SYMBOL vmlinux 0xb3b8dce0	__v4l2_ctrl_s_ctrl_string
