@@ -352,28 +352,20 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 		memcpy(&phs_hdr->iucv_hdr, imsg, sizeof(struct iucv_message));
 
 	skb->dev = iucv->hs_dev;
-	if (!skb->dev) {
-		err = -ENODEV;
-		goto err_free;
-	}
-	if (!(skb->dev->flags & IFF_UP) || !netif_carrier_ok(skb->dev)) {
-		err = -ENETDOWN;
-		goto err_free;
-	}
+	if (!skb->dev)
+		return -ENODEV;
+	if (!(skb->dev->flags & IFF_UP) || !netif_carrier_ok(skb->dev))
+		return -ENETDOWN;
 	if (skb->len > skb->dev->mtu) {
-		if (sock->sk_type == SOCK_SEQPACKET) {
-			err = -EMSGSIZE;
-			goto err_free;
-		}
-		skb_trim(skb, skb->dev->mtu);
+		if (sock->sk_type == SOCK_SEQPACKET)
+			return -EMSGSIZE;
+		else
+			skb_trim(skb, skb->dev->mtu);
 	}
 	skb->protocol = ETH_P_AF_IUCV;
 	nskb = skb_clone(skb, GFP_ATOMIC);
-	if (!nskb) {
-		err = -ENOMEM;
-		goto err_free;
-	}
-
+	if (!nskb)
+		return -ENOMEM;
 	skb_queue_tail(&iucv->send_skb_q, nskb);
 	err = dev_queue_xmit(skb);
 	if (net_xmit_eval(err)) {
@@ -384,10 +376,6 @@ static int afiucv_hs_send(struct iucv_message *imsg, struct sock *sock,
 		WARN_ON(atomic_read(&iucv->msg_recv) < 0);
 	}
 	return net_xmit_eval(err);
-
-err_free:
-	kfree_skb(skb);
-	return err;
 }
 
 static struct sock *__iucv_get_sock_by_name(char *nm)
@@ -717,8 +705,10 @@ static int iucv_sock_bind(struct socket *sock, struct sockaddr *addr,
 	char uid[9];
 
 	/* Verify the input sockaddr */
-	if (addr_len < sizeof(struct sockaddr_iucv) ||
-	    addr->sa_family != AF_IUCV)
+	if (!addr || addr->sa_family != AF_IUCV)
+		return -EINVAL;
+
+	if (addr_len < sizeof(struct sockaddr_iucv))
 		return -EINVAL;
 
 	lock_sock(sk);
@@ -862,7 +852,7 @@ static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
 	struct iucv_sock *iucv = iucv_sk(sk);
 	int err;
 
-	if (alen < sizeof(struct sockaddr_iucv) || addr->sa_family != AF_IUCV)
+	if (addr->sa_family != AF_IUCV || alen < sizeof(struct sockaddr_iucv))
 		return -EINVAL;
 
 	if (sk->sk_state != IUCV_OPEN && sk->sk_state != IUCV_BOUND)
@@ -1156,7 +1146,7 @@ static int iucv_sock_sendmsg(struct socket *sock, struct msghdr *msg,
 		err = afiucv_hs_send(&txmsg, sk, skb, 0);
 		if (err) {
 			atomic_dec(&iucv->msg_sent);
-			goto out;
+			goto fail;
 		}
 		goto release;
 	}
@@ -2129,8 +2119,8 @@ static int afiucv_hs_rcv(struct sk_buff *skb, struct net_device *dev,
 	struct sock *sk;
 	struct iucv_sock *iucv;
 	struct af_iucv_trans_hdr *trans_hdr;
-	int err = NET_RX_SUCCESS;
 	char nullstring[8];
+	int err = 0;
 
 	skb_pull(skb, ETH_HLEN);
 	trans_hdr = (struct af_iucv_trans_hdr *)skb->data;
@@ -2214,7 +2204,7 @@ static int afiucv_hs_rcv(struct sk_buff *skb, struct net_device *dev,
 		err = afiucv_hs_callback_rx(sk, skb);
 		break;
 	default:
-		kfree_skb(skb);
+		;
 	}
 
 	return err;
@@ -2404,13 +2394,6 @@ out:
 	return err;
 }
 
-static void afiucv_iucv_exit(void)
-{
-	device_unregister(af_iucv_dev);
-	driver_unregister(&af_iucv_driver);
-	pr_iucv->iucv_unregister(&af_iucv_handler, 0);
-}
-
 static int __init afiucv_init(void)
 {
 	int err;
@@ -2444,18 +2427,11 @@ static int __init afiucv_init(void)
 		err = afiucv_iucv_init();
 		if (err)
 			goto out_sock;
-	}
-
-	err = register_netdevice_notifier(&afiucv_netdev_notifier);
-	if (err)
-		goto out_notifier;
-
+	} else
+		register_netdevice_notifier(&afiucv_netdev_notifier);
 	dev_add_pack(&iucv_packet_type);
 	return 0;
 
-out_notifier:
-	if (pr_iucv)
-		afiucv_iucv_exit();
 out_sock:
 	sock_unregister(PF_IUCV);
 out_proto:
@@ -2469,11 +2445,12 @@ out:
 static void __exit afiucv_exit(void)
 {
 	if (pr_iucv) {
-		afiucv_iucv_exit();
+		device_unregister(af_iucv_dev);
+		driver_unregister(&af_iucv_driver);
+		pr_iucv->iucv_unregister(&af_iucv_handler, 0);
 		symbol_put(iucv_if);
-	}
-
-	unregister_netdevice_notifier(&afiucv_netdev_notifier);
+	} else
+		unregister_netdevice_notifier(&afiucv_netdev_notifier);
 	dev_remove_pack(&iucv_packet_type);
 	sock_unregister(PF_IUCV);
 	proto_unregister(&iucv_proto);

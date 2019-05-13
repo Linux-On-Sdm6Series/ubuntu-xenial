@@ -30,7 +30,6 @@ struct apq8016_sbc_data {
 	struct snd_soc_dai_link dai_link[];	/* dynamically allocated */
 };
 
-#define MIC_CTRL_TER_WS_SLAVE_SEL	BIT(21)
 #define MIC_CTRL_QUA_WS_SLAVE_SEL_10	BIT(17)
 #define MIC_CTRL_TLMM_SCLK_EN		BIT(1)
 #define	SPKR_CTL_PRI_WS_SLAVE_SEL_11	(BIT(17) | BIT(16))
@@ -53,12 +52,6 @@ static int apq8016_sbc_dai_init(struct snd_soc_pcm_runtime *rtd)
 		writel(readl(pdata->mic_iomux) | MIC_CTRL_QUA_WS_SLAVE_SEL_10 |
 			MIC_CTRL_TLMM_SCLK_EN,
 			pdata->mic_iomux);
-		break;
-	case MI2S_TERTIARY:
-		writel(readl(pdata->mic_iomux) | MIC_CTRL_TER_WS_SLAVE_SEL |
-			MIC_CTRL_TLMM_SCLK_EN,
-			pdata->mic_iomux);
-
 		break;
 
 	default:
@@ -85,15 +78,6 @@ static struct apq8016_sbc_data *apq8016_sbc_parse_of(struct snd_soc_card *card)
 		return ERR_PTR(ret);
 	}
 
-	/* DAPM routes */
-	if (of_property_read_bool(node, "qcom,audio-routing")) {
-		ret = snd_soc_of_parse_audio_routing(card,
-					"qcom,audio-routing");
-		if (ret)
-			return ERR_PTR(ret);
-	}
-
-
 	/* Populate links */
 	num_links = of_get_child_count(node);
 
@@ -114,70 +98,50 @@ static struct apq8016_sbc_data *apq8016_sbc_parse_of(struct snd_soc_card *card)
 
 		if (!cpu || !codec) {
 			dev_err(dev, "Can't find cpu/codec DT node\n");
-			ret = -EINVAL;
-			goto error;
+			return ERR_PTR(-EINVAL);
 		}
 
 		link->cpu_of_node = of_parse_phandle(cpu, "sound-dai", 0);
 		if (!link->cpu_of_node) {
 			dev_err(card->dev, "error getting cpu phandle\n");
-			ret = -EINVAL;
-			goto error;
+			return ERR_PTR(-EINVAL);
 		}
 
 		link->codec_of_node = of_parse_phandle(codec, "sound-dai", 0);
 		if (!link->codec_of_node) {
 			dev_err(card->dev, "error getting codec phandle\n");
-			ret = -EINVAL;
-			goto error;
+			return ERR_PTR(-EINVAL);
 		}
 
 		ret = snd_soc_of_get_dai_name(cpu, &link->cpu_dai_name);
 		if (ret) {
 			dev_err(card->dev, "error getting cpu dai name\n");
-			goto error;
+			return ERR_PTR(ret);
 		}
 
 		ret = snd_soc_of_get_dai_name(codec, &link->codec_dai_name);
 		if (ret) {
 			dev_err(card->dev, "error getting codec dai name\n");
-			goto error;
+			return ERR_PTR(ret);
 		}
 
 		link->platform_of_node = link->cpu_of_node;
+		/* For now we only support playback */
+		link->playback_only = true;
+
 		ret = of_property_read_string(np, "link-name", &link->name);
 		if (ret) {
 			dev_err(card->dev, "error getting codec dai_link name\n");
-			goto error;
+			return ERR_PTR(ret);
 		}
 
 		link->stream_name = link->name;
 		link->init = apq8016_sbc_dai_init;
 		link++;
-
-		of_node_put(cpu);
-		of_node_put(codec);
 	}
 
 	return data;
-
- error:
-	of_node_put(np);
-	of_node_put(cpu);
-	of_node_put(codec);
-	return ERR_PTR(ret);
 }
-
-static const struct snd_soc_dapm_widget apq8016_sbc_dapm_widgets[] = {
-
-	//SND_SOC_DAPM_SUPPLY_S("MCLK", -1, SND_SOC_NOPM, 0, 0,
-	//msm8x16_mclk_event, SND_SOC_DAPM_POST_PMD), FIXME??
-	SND_SOC_DAPM_MIC("Handset Mic", NULL),
-	SND_SOC_DAPM_MIC("Headset Mic", NULL),
-	SND_SOC_DAPM_MIC("Secondary Mic", NULL),
-	SND_SOC_DAPM_MIC("Digital Mic1", NULL),
-	SND_SOC_DAPM_MIC("Digital Mic2", NULL),
-};
 
 static int apq8016_sbc_platform_probe(struct platform_device *pdev)
 {
@@ -191,8 +155,6 @@ static int apq8016_sbc_platform_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	card->dev = dev;
-	card->dapm_widgets = apq8016_sbc_dapm_widgets;
-	card->num_dapm_widgets = ARRAY_SIZE(apq8016_sbc_dapm_widgets);
 	data = apq8016_sbc_parse_of(card);
 	if (IS_ERR(data)) {
 		dev_err(&pdev->dev, "Error resolving dai links: %ld\n",

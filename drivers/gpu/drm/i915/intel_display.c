@@ -6449,11 +6449,13 @@ static void intel_connector_check_state(struct intel_connector *connector)
 
 int intel_connector_init(struct intel_connector *connector)
 {
-	drm_atomic_helper_connector_reset(&connector->base);
+	struct drm_connector_state *connector_state;
 
-	if (!connector->base.state)
+	connector_state = kzalloc(sizeof *connector_state, GFP_KERNEL);
+	if (!connector_state)
 		return -ENOMEM;
 
+	connector->base.state = connector_state;
 	return 0;
 }
 
@@ -10745,10 +10747,6 @@ void intel_mark_busy(struct drm_device *dev)
 		return;
 
 	intel_runtime_pm_get(dev_priv);
-
-	if (NEEDS_RC6_CTX_CORRUPTION_WA(dev_priv))
-		intel_uncore_forcewake_get(dev_priv, FORCEWAKE_ALL);
-
 	i915_update_gfx_val(dev_priv);
 	if (INTEL_INFO(dev)->gen >= 6)
 		gen6_rps_busy(dev_priv);
@@ -10766,11 +10764,6 @@ void intel_mark_idle(struct drm_device *dev)
 
 	if (INTEL_INFO(dev)->gen >= 6)
 		gen6_rps_idle(dev->dev_private);
-
-	if (NEEDS_RC6_CTX_CORRUPTION_WA(dev_priv)) {
-		i915_rc6_ctx_wa_check(dev_priv);
-		intel_uncore_forcewake_put(dev_priv, FORCEWAKE_ALL);
-	}
 
 	intel_runtime_pm_put(dev_priv);
 }
@@ -15157,8 +15150,6 @@ static void intel_sanitize_crtc(struct intel_crtc *crtc)
 		WARN_ON(drm_atomic_set_mode_for_crtc(crtc->base.state, NULL) < 0);
 		crtc->base.state->active = crtc->active;
 		crtc->base.enabled = crtc->active;
-		crtc->base.state->connector_mask = 0;
-		crtc->base.state->encoder_mask = 0;
 
 		/* Because we only establish the connector -> encoder ->
 		 * crtc links if something is active, this means the
@@ -15361,23 +15352,7 @@ static void intel_modeset_readout_hw_state(struct drm_device *dev)
 	for_each_intel_connector(dev, connector) {
 		if (connector->get_hw_state(connector)) {
 			connector->base.dpms = DRM_MODE_DPMS_ON;
-
-			encoder = connector->encoder;
-			connector->base.encoder = &encoder->base;
-
-			if (encoder->base.crtc &&
-			    encoder->base.crtc->state->active) {
-				/*
-				 * This has to be done during hardware readout
-				 * because anything calling .crtc_disable may
-				 * rely on the connector_mask being accurate.
-				 */
-				encoder->base.crtc->state->connector_mask |=
-					1 << drm_connector_index(&connector->base);
-				encoder->base.crtc->state->encoder_mask |=
-					1 << drm_encoder_index(&encoder->base);
-			}
-
+			connector->base.encoder = &connector->encoder->base;
 		} else {
 			connector->base.dpms = DRM_MODE_DPMS_OFF;
 			connector->base.encoder = NULL;

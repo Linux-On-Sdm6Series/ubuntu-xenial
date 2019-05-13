@@ -357,7 +357,7 @@ struct tty_driver *tty_find_polling_driver(char *name, int *line)
 	mutex_lock(&tty_mutex);
 	/* Search through the tty devices to look for a match */
 	list_for_each_entry(p, &tty_drivers, tty_drivers) {
-		if (!len || strncmp(name, p->name, len) != 0)
+		if (strncmp(name, p->name, len) != 0)
 			continue;
 		stp = str;
 		if (*stp == ',')
@@ -512,8 +512,6 @@ void proc_clear_tty(struct task_struct *p)
 	spin_unlock_irqrestore(&p->sighand->siglock, flags);
 	tty_kref_put(tty);
 }
-
-extern void tty_sysctl_init(void);
 
 /**
  * proc_set_tty -  set the controlling terminal
@@ -736,7 +734,7 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 	while (refs--)
 		tty_kref_put(tty);
 
-	tty_ldisc_hangup(tty, cons_filp != NULL);
+	tty_ldisc_hangup(tty);
 
 	spin_lock_irq(&tty->ctrl_lock);
 	clear_bit(TTY_THROTTLED, &tty->flags);
@@ -761,9 +759,10 @@ static void __tty_hangup(struct tty_struct *tty, int exit_session)
 	} else if (tty->ops->hangup)
 		tty->ops->hangup(tty);
 	/*
-	 * We don't want to have driver/ldisc interactions beyond the ones
-	 * we did here. The driver layer expects no calls after ->hangup()
-	 * from the ldisc side, which is now guaranteed.
+	 * We don't want to have driver/ldisc interactions beyond
+	 * the ones we did here. The driver layer expects no
+	 * calls after ->hangup() from the ldisc side. However we
+	 * can't yet guarantee all that.
 	 */
 	set_bit(TTY_HUPPED, &tty->flags);
 	clear_bit(TTY_HUPPING, &tty->flags);
@@ -1077,8 +1076,6 @@ static ssize_t tty_read(struct file *file, char __user *buf, size_t count,
 	/* We want to wait for the line discipline to sort out in this
 	   situation */
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return hung_up_tty_read(file, buf, count, ppos);
 	if (ld->ops->read)
 		i = ld->ops->read(tty, file, buf, count);
 	else
@@ -1254,8 +1251,6 @@ static ssize_t tty_write(struct file *file, const char __user *buf,
 		printk(KERN_ERR "tty driver %s lacks a write_room method.\n",
 			tty->driver->name);
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return hung_up_tty_write(file, buf, count, ppos);
 	if (!ld->ops->write)
 		ret = -EIO;
 	else
@@ -1401,10 +1396,9 @@ int tty_init_termios(struct tty_struct *tty)
 	else {
 		/* Check for lazy saved data */
 		tp = tty->driver->termios[idx];
-		if (tp != NULL) {
+		if (tp != NULL)
 			tty->termios = *tp;
-			tty->termios.c_line  = tty->driver->init_termios.c_line;
-		} else
+		else
 			tty->termios = tty->driver->init_termios;
 	}
 	/* Compatibility until drivers always set this */
@@ -1476,8 +1470,6 @@ void tty_driver_remove_tty(struct tty_driver *driver, struct tty_struct *tty)
 static int tty_reopen(struct tty_struct *tty)
 {
 	struct tty_driver *driver = tty->driver;
-	struct tty_ldisc *ld;
-	int retval = 0;
 
 	if (driver->type == TTY_DRIVER_TYPE_PTY &&
 	    driver->subtype == PTY_TYPE_MASTER)
@@ -1489,23 +1481,11 @@ static int tty_reopen(struct tty_struct *tty)
 	if (test_bit(TTY_EXCLUSIVE, &tty->flags) && !capable(CAP_SYS_ADMIN))
 		return -EBUSY;
 
-	ld = tty_ldisc_ref_wait(tty);
-	if (ld) {
-		tty_ldisc_deref(ld);
-	} else {
-		retval = tty_ldisc_lock(tty, 5 * HZ);
-		if (retval)
-			return retval;
+	tty->count++;
 
-		if (!tty->ldisc)
-			retval = tty_ldisc_reinit(tty, tty->termios.c_line);
-		tty_ldisc_unlock(tty);
-	}
+	WARN_ON(!tty->ldisc);
 
-	if (retval == 0)
-		tty->count++;
-
-	return retval;
+	return 0;
 }
 
 /**
@@ -1566,9 +1546,6 @@ struct tty_struct *tty_init_dev(struct tty_driver *driver, int idx)
 			"%s: %s driver does not set tty->port. This will crash the kernel later. Fix the driver!\n",
 			__func__, tty->driver->name);
 
-	retval = tty_ldisc_lock(tty, 5 * HZ);
-	if (retval)
-		goto err_release_lock;
 	tty->port->itty = tty;
 
 	/*
@@ -1579,7 +1556,6 @@ struct tty_struct *tty_init_dev(struct tty_driver *driver, int idx)
 	retval = tty_ldisc_setup(tty, tty->link);
 	if (retval)
 		goto err_release_tty;
-	tty_ldisc_unlock(tty);
 	/* Return the tty locked so that it cannot vanish under the caller */
 	return tty;
 
@@ -1594,11 +1570,8 @@ err_module_put:
 	/* call the tty release_tty routine to clean out this slot */
 err_release_tty:
 	tty_unlock(tty);
-	tty_ldisc_unlock(tty);
 	printk_ratelimited(KERN_INFO "tty_init_dev: ldisc open failed, "
 				 "clearing slot %d\n", idx);
-err_release_lock:
-	tty_unlock(tty);
 	release_tty(tty, idx);
 	return ERR_PTR(retval);
 }
@@ -2235,8 +2208,6 @@ static unsigned int tty_poll(struct file *filp, poll_table *wait)
 		return 0;
 
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return hung_up_tty_poll(filp, wait);
 	if (ld->ops->poll)
 		ret = ld->ops->poll(tty, filp, wait);
 	tty_ldisc_deref(ld);
@@ -2326,10 +2297,7 @@ static int tiocsti(struct tty_struct *tty, char __user *p)
 		return -EFAULT;
 	tty_audit_tiocsti(tty, ch);
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return -EIO;
-	if (ld->ops->receive_buf)
-		ld->ops->receive_buf(tty, &ch, &mbz, 1);
+	ld->ops->receive_buf(tty, &ch, &mbz, 1);
 	tty_ldisc_deref(ld);
 	return 0;
 }
@@ -2693,13 +2661,13 @@ static int tiocgsid(struct tty_struct *tty, struct tty_struct *real_tty, pid_t _
 
 static int tiocsetd(struct tty_struct *tty, int __user *p)
 {
-	int disc;
+	int ldisc;
 	int ret;
 
-	if (get_user(disc, p))
+	if (get_user(ldisc, p))
 		return -EFAULT;
 
-	ret = tty_set_ldisc(tty, disc);
+	ret = tty_set_ldisc(tty, ldisc);
 
 	return ret;
 }
@@ -2721,8 +2689,6 @@ static int tiocgetd(struct tty_struct *tty, int __user *p)
 	int ret;
 
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return -EIO;
 	ret = put_user(ld->ops->num, p);
 	tty_ldisc_deref(ld);
 	return ret;
@@ -3020,8 +2986,6 @@ long tty_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return retval;
 	}
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return hung_up_tty_ioctl(file, cmd, arg);
 	retval = -EINVAL;
 	if (ld->ops->ioctl) {
 		retval = ld->ops->ioctl(tty, file, cmd, arg);
@@ -3050,8 +3014,6 @@ static long tty_compat_ioctl(struct file *file, unsigned int cmd,
 	}
 
 	ld = tty_ldisc_ref_wait(tty);
-	if (!ld)
-		return hung_up_tty_compat_ioctl(file, cmd, arg);
 	if (ld->ops->compat_ioctl)
 		retval = ld->ops->compat_ioctl(tty, file, cmd, arg);
 	else
@@ -3726,7 +3688,6 @@ void console_sysfs_notify(void)
  */
 int __init tty_init(void)
 {
-	tty_sysctl_init();
 	cdev_init(&tty_cdev, &tty_fops);
 	if (cdev_add(&tty_cdev, MKDEV(TTYAUX_MAJOR, 0), 1) ||
 	    register_chrdev_region(MKDEV(TTYAUX_MAJOR, 0), 1, "/dev/tty") < 0)

@@ -28,7 +28,6 @@ static void mqprio_destroy(struct Qdisc *sch)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct mqprio_sched *priv = qdisc_priv(sch);
-	struct tc_to_netdev tc = {.type = TC_SETUP_MQPRIO};
 	unsigned int ntx;
 
 	if (priv->qdiscs) {
@@ -40,7 +39,7 @@ static void mqprio_destroy(struct Qdisc *sch)
 	}
 
 	if (priv->hw_owned && dev->netdev_ops->ndo_setup_tc)
-		dev->netdev_ops->ndo_setup_tc(dev, sch->handle, 0, &tc);
+		dev->netdev_ops->ndo_setup_tc(dev, 0);
 	else
 		netdev_set_num_tc(dev, 0);
 }
@@ -138,11 +137,8 @@ static int mqprio_init(struct Qdisc *sch, struct nlattr *opt)
 	 * supplied and verified mapping
 	 */
 	if (qopt->hw) {
-		struct tc_to_netdev tc = {.type = TC_SETUP_MQPRIO,
-					  .tc = qopt->num_tc};
-
 		priv->hw_owned = 1;
-		err = dev->netdev_ops->ndo_setup_tc(dev, sch->handle, 0, &tc);
+		err = dev->netdev_ops->ndo_setup_tc(dev, qopt->num_tc);
 		if (err)
 			return err;
 	} else {
@@ -359,8 +355,7 @@ static int mqprio_dump_class_stats(struct Qdisc *sch, unsigned long cl,
 		struct netdev_queue *dev_queue = mqprio_queue_get(sch, cl);
 
 		sch = dev_queue->qdisc_sleeping;
-		if (gnet_stats_copy_basic(d, sch->cpu_bstats,
-					  &sch->bstats) < 0 ||
+		if (gnet_stats_copy_basic(d, NULL, &sch->bstats) < 0 ||
 		    gnet_stats_copy_queue(d, NULL,
 					  &sch->qstats, sch->q.qlen) < 0)
 			return -1;

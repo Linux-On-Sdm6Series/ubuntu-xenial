@@ -130,8 +130,7 @@ int con_copy_unimap(struct vc_data *dst_vc, struct vc_data *src_vc)
 void vt_event_post(unsigned int event, unsigned int old, unsigned int new);
 int vt_waitactive(int n);
 void change_console(struct vc_data *new_vc);
-void reset_vc(struct vc_data *vc, int mode);
-
+void reset_vc(struct vc_data *vc);
 extern int do_unbind_con_driver(const struct consw *csw, int first, int last,
 			     int deflt);
 int vty_init(const struct file_operations *console_fops);
@@ -143,7 +142,7 @@ static inline bool vt_force_oops_output(struct vc_data *vc)
 	return false;
 }
 
-extern bool vt_dont_switch;
+extern char vt_dont_switch;
 extern int default_utf8;
 extern int global_cursor_default;
 

@@ -51,7 +51,6 @@
 #include <asm/switch_to.h>
 #include <asm/smp.h>
 #include <asm/dbell.h>
-#include <asm/hmi.h>
 #include <linux/gfp.h>
 #include <linux/vmalloc.h>
 #include <linux/highmem.h>
@@ -1101,9 +1100,6 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	case KVM_REG_PPC_DPDES:
 		*val = get_reg_val(id, vcpu->arch.vcore->dpdes);
 		break;
-	case KVM_REG_PPC_VTB:
-		*val = get_reg_val(id, vcpu->arch.vcore->vtb);
-		break;
 	case KVM_REG_PPC_DAWR:
 		*val = get_reg_val(id, vcpu->arch.dawr);
 		break;
@@ -1298,9 +1294,6 @@ static int kvmppc_set_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 		break;
 	case KVM_REG_PPC_DPDES:
 		vcpu->arch.vcore->dpdes = set_reg_val(id, *val);
-		break;
-	case KVM_REG_PPC_VTB:
-		vcpu->arch.vcore->vtb = set_reg_val(id, *val);
 		break;
 	case KVM_REG_PPC_DAWR:
 		vcpu->arch.dawr = set_reg_val(id, *val);
@@ -1676,7 +1669,7 @@ static struct kvm_vcpu *kvmppc_core_vcpu_create_hv(struct kvm *kvm,
 	mutex_unlock(&kvm->lock);
 
 	if (!vcore)
-		goto uninit_vcpu;
+		goto free_vcpu;
 
 	spin_lock(&vcore->lock);
 	++vcore->num_threads;
@@ -1692,8 +1685,6 @@ static struct kvm_vcpu *kvmppc_core_vcpu_create_hv(struct kvm *kvm,
 
 	return vcpu;
 
-uninit_vcpu:
-	kvm_vcpu_uninit(vcpu);
 free_vcpu:
 	kmem_cache_free(kvm_vcpu_cache, vcpu);
 out:
@@ -2130,11 +2121,9 @@ static bool can_piggyback_subcore(struct kvmppc_vcore *pvc,
 	    pvc->lpcr != vc->lpcr)
 		return false;
 
-	/*
-	 * P8 guests can't do piggybacking, because then the
-	 * VTB would be shared between the vcpus.
-	 */
-	if (cpu_has_feature(CPU_FTR_ARCH_207S))
+	/* P8 guest with > 1 thread per core would see wrong TIR value */
+	if (cpu_has_feature(CPU_FTR_ARCH_207S) &&
+	    (vc->num_threads > 1 || pvc->num_threads > 1))
 		return false;
 
 	n_thr = cip->subcore_threads[sub] + pvc->num_threads;
@@ -3274,38 +3263,6 @@ static struct kvmppc_ops kvm_ops_hv = {
 	.hcall_implemented = kvmppc_hcall_impl_hv,
 };
 
-static int kvm_init_subcore_bitmap(void)
-{
-	int i, j;
-	int nr_cores = cpu_nr_cores();
-	struct sibling_subcore_state *sibling_subcore_state;
-
-	for (i = 0; i < nr_cores; i++) {
-		int first_cpu = i * threads_per_core;
-		int node = cpu_to_node(first_cpu);
-
-		/* Ignore if it is already allocated. */
-		if (paca[first_cpu].sibling_subcore_state)
-			continue;
-
-		sibling_subcore_state =
-			kmalloc_node(sizeof(struct sibling_subcore_state),
-							GFP_KERNEL, node);
-		if (!sibling_subcore_state)
-			return -ENOMEM;
-
-		memset(sibling_subcore_state, 0,
-				sizeof(struct sibling_subcore_state));
-
-		for (j = 0; j < threads_per_core; j++) {
-			int cpu = first_cpu + j;
-
-			paca[cpu].sibling_subcore_state = sibling_subcore_state;
-		}
-	}
-	return 0;
-}
-
 static int kvmppc_book3s_init_hv(void)
 {
 	int r;
@@ -3315,10 +3272,6 @@ static int kvmppc_book3s_init_hv(void)
 	r = kvmppc_core_check_processor_compat_hv();
 	if (r < 0)
 		return -ENODEV;
-
-	r = kvm_init_subcore_bitmap();
-	if (r)
-		return r;
 
 	kvm_ops_hv.owner = THIS_MODULE;
 	kvmppc_hv_ops = &kvm_ops_hv;

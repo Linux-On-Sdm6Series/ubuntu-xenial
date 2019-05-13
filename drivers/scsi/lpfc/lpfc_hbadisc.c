@@ -674,6 +674,8 @@ lpfc_work_done(struct lpfc_hba *phba)
 				lpfc_mbox_timeout_handler(phba);
 			if (work_port_events & WORKER_FABRIC_BLOCK_TMO)
 				lpfc_unblock_fabric_iocbs(phba);
+			if (work_port_events & WORKER_FDMI_TMO)
+				lpfc_fdmi_timeout_handler(vport);
 			if (work_port_events & WORKER_RAMP_DOWN_QUEUE)
 				lpfc_ramp_down_queue_handler(phba);
 			if (work_port_events & WORKER_DELAYED_DISC_TMO)
@@ -900,11 +902,7 @@ lpfc_linkdown(struct lpfc_hba *phba)
 			lpfc_linkdown_port(vports[i]);
 		}
 	lpfc_destroy_vport_work_array(phba, vports);
-
-	/* Clean up any SLI3 firmware default rpi's */
-	if (phba->sli_rev > LPFC_SLI_REV3)
-		goto skip_unreg_did;
-
+	/* Clean up any firmware default rpi's */
 	mb = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
 	if (mb) {
 		lpfc_unreg_did(phba, 0xffff, LPFC_UNREG_ALL_DFLT_RPIS, mb);
@@ -916,7 +914,6 @@ lpfc_linkdown(struct lpfc_hba *phba)
 		}
 	}
 
- skip_unreg_did:
 	/* Setup myDID for link up if we are in pt2pt mode */
 	if (phba->pport->fc_flag & FC_PT2PT) {
 		phba->pport->fc_myDID = 0;
@@ -1964,26 +1961,6 @@ int lpfc_sli4_fcf_rr_next_proc(struct lpfc_vport *vport, uint16_t fcf_index)
 				"failover and change port state:x%x/x%x\n",
 				phba->pport->port_state, LPFC_VPORT_UNKNOWN);
 		phba->pport->port_state = LPFC_VPORT_UNKNOWN;
-
-		if (!phba->fcf.fcf_redisc_attempted) {
-			lpfc_unregister_fcf(phba);
-
-			rc = lpfc_sli4_redisc_fcf_table(phba);
-			if (!rc) {
-				lpfc_printf_log(phba, KERN_INFO, LOG_FIP,
-						"3195 Rediscover FCF table\n");
-				phba->fcf.fcf_redisc_attempted = 1;
-				lpfc_sli4_clear_fcf_rr_bmask(phba);
-			} else {
-				lpfc_printf_log(phba, KERN_WARNING, LOG_FIP,
-						"3196 Rediscover FCF table "
-						"failed. Status:x%x\n", rc);
-			}
-		} else {
-			lpfc_printf_log(phba, KERN_WARNING, LOG_FIP,
-					"3197 Already rediscover FCF table "
-					"attempted. No more retry\n");
-		}
 		goto stop_flogi_current_fcf;
 	} else {
 		lpfc_printf_log(phba, KERN_INFO, LOG_FIP | LOG_ELS,
@@ -3063,22 +3040,19 @@ lpfc_mbx_process_link_up(struct lpfc_hba *phba, struct lpfc_mbx_read_top *la)
 	uint32_t fc_flags = 0;
 
 	spin_lock_irq(&phba->hbalock);
-	phba->fc_linkspeed = bf_get(lpfc_mbx_read_top_link_spd, la);
-
-	if (!(phba->hba_flag & HBA_FCOE_MODE)) {
-		switch (bf_get(lpfc_mbx_read_top_link_spd, la)) {
-		case LPFC_LINK_SPEED_1GHZ:
-		case LPFC_LINK_SPEED_2GHZ:
-		case LPFC_LINK_SPEED_4GHZ:
-		case LPFC_LINK_SPEED_8GHZ:
-		case LPFC_LINK_SPEED_10GHZ:
-		case LPFC_LINK_SPEED_16GHZ:
-		case LPFC_LINK_SPEED_32GHZ:
-			break;
-		default:
-			phba->fc_linkspeed = LPFC_LINK_SPEED_UNKNOWN;
-			break;
-		}
+	switch (bf_get(lpfc_mbx_read_top_link_spd, la)) {
+	case LPFC_LINK_SPEED_1GHZ:
+	case LPFC_LINK_SPEED_2GHZ:
+	case LPFC_LINK_SPEED_4GHZ:
+	case LPFC_LINK_SPEED_8GHZ:
+	case LPFC_LINK_SPEED_10GHZ:
+	case LPFC_LINK_SPEED_16GHZ:
+	case LPFC_LINK_SPEED_32GHZ:
+		phba->fc_linkspeed = bf_get(lpfc_mbx_read_top_link_spd, la);
+		break;
+	default:
+		phba->fc_linkspeed = LPFC_LINK_SPEED_UNKNOWN;
+		break;
 	}
 
 	if (phba->fc_topology &&
@@ -4673,10 +4647,6 @@ lpfc_unreg_default_rpis(struct lpfc_vport *vport)
 	LPFC_MBOXQ_t     *mbox;
 	int rc;
 
-	/* Unreg DID is an SLI3 operation. */
-	if (phba->sli_rev > LPFC_SLI_REV3)
-		return;
-
 	mbox = mempool_alloc(phba->mbox_mem_pool, GFP_KERNEL);
 	if (mbox) {
 		lpfc_unreg_did(phba, vport->vpi, LPFC_UNREG_ALL_DFLT_RPIS,
@@ -5586,15 +5556,15 @@ lpfc_mbx_cmpl_fdmi_reg_login(struct lpfc_hba *phba, LPFC_MBOXQ_t *pmb)
 			 ndlp->nlp_usg_map, ndlp);
 	/*
 	 * Start issuing Fabric-Device Management Interface (FDMI) command to
-	 * 0xfffffa (FDMI well known port).
-	 * DHBA -> DPRT -> RHBA -> RPA  (physical port)
-	 * DPRT -> RPRT (vports)
+	 * 0xfffffa (FDMI well known port) or Delay issuing FDMI command if
+	 * fdmi-on=2 (supporting RPA/hostnmae)
 	 */
-	if (vport->port_type == LPFC_PHYSICAL_PORT)
-		lpfc_fdmi_cmd(vport, ndlp, SLI_MGMT_DHBA, 0);
-	else
-		lpfc_fdmi_cmd(vport, ndlp, SLI_MGMT_DPRT, 0);
 
+	if (vport->cfg_fdmi_on & LPFC_FDMI_REG_DELAY)
+		mod_timer(&vport->fc_fdmitmo,
+			  jiffies + msecs_to_jiffies(1000 * 60));
+	else
+		lpfc_fdmi_cmd(vport, ndlp, SLI_MGMT_DHBA);
 
 	/* decrement the node reference count held for this callback
 	 * function.

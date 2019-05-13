@@ -55,8 +55,6 @@ LIST_HEAD(gpio_chips);
 
 static void gpiochip_free_hogs(struct gpio_chip *chip);
 static void gpiochip_irqchip_remove(struct gpio_chip *gpiochip);
-static int gpiochip_irqchip_init_valid_mask(struct gpio_chip *gpiochip);
-static void gpiochip_irqchip_free_valid_mask(struct gpio_chip *gpiochip);
 
 
 static inline void desc_set_label(struct gpio_desc *d, const char *label)
@@ -164,14 +162,6 @@ int gpiod_get_direction(struct gpio_desc *desc)
 
 	chip = gpiod_to_chip(desc);
 	offset = gpio_chip_hwgpio(desc);
-
-	/*
-	 * Open drain emulation using input mode may incorrectly report
-	 * input here, fix that up.
-	 */
-	if (test_bit(FLAG_OPEN_DRAIN, &desc->flags) &&
-	    test_bit(FLAG_IS_OUT, &desc->flags))
-		return 0;
 
 	if (!chip->get_direction)
 		return status;
@@ -365,10 +355,6 @@ int gpiochip_add(struct gpio_chip *chip)
 	if (status)
 		goto err_remove_from_list;
 
-	status = gpiochip_irqchip_init_valid_mask(chip);
-	if (status)
-		goto err_remove_from_list;
-
 	status = of_gpiochip_add(chip);
 	if (status)
 		goto err_remove_chip;
@@ -389,7 +375,6 @@ err_remove_chip:
 	acpi_gpiochip_remove(chip);
 	gpiochip_free_hogs(chip);
 	of_gpiochip_remove(chip);
-	gpiochip_irqchip_free_valid_mask(chip);
 err_remove_from_list:
 	spin_lock_irqsave(&gpio_lock, flags);
 	list_del(&chip->list);
@@ -496,40 +481,6 @@ static struct gpio_chip *find_chip_by_name(const char *name)
  * The following is irqchip helper code for gpiochips.
  */
 
-static int gpiochip_irqchip_init_valid_mask(struct gpio_chip *gpiochip)
-{
-	int i;
-
-	if (!gpiochip->irq_need_valid_mask)
-		return 0;
-
-	gpiochip->irq_valid_mask = kcalloc(BITS_TO_LONGS(gpiochip->ngpio),
-					   sizeof(long), GFP_KERNEL);
-	if (!gpiochip->irq_valid_mask)
-		return -ENOMEM;
-
-	/* Assume by default all GPIOs are valid */
-	for (i = 0; i < gpiochip->ngpio; i++)
-		set_bit(i, gpiochip->irq_valid_mask);
-
-	return 0;
-}
-
-static void gpiochip_irqchip_free_valid_mask(struct gpio_chip *gpiochip)
-{
-	kfree(gpiochip->irq_valid_mask);
-	gpiochip->irq_valid_mask = NULL;
-}
-
-static bool gpiochip_irqchip_irq_valid(const struct gpio_chip *gpiochip,
-				       unsigned int offset)
-{
-	/* No mask means all valid */
-	if (likely(!gpiochip->irq_valid_mask))
-		return true;
-	return test_bit(offset, gpiochip->irq_valid_mask);
-}
-
 /**
  * gpiochip_set_chained_irqchip() - sets a chained irqchip to a gpiochip
  * @gpiochip: the gpiochip to set the irqchip chain to
@@ -571,12 +522,9 @@ void gpiochip_set_chained_irqchip(struct gpio_chip *gpiochip,
 	}
 
 	/* Set the parent IRQ for all affected IRQs */
-	for (offset = 0; offset < gpiochip->ngpio; offset++) {
-		if (!gpiochip_irqchip_irq_valid(gpiochip, offset))
-			continue;
+	for (offset = 0; offset < gpiochip->ngpio; offset++)
 		irq_set_parent(irq_find_mapping(gpiochip->irqdomain, offset),
 			       parent_irq);
-	}
 }
 EXPORT_SYMBOL_GPL(gpiochip_set_chained_irqchip);
 
@@ -683,12 +631,9 @@ static void gpiochip_irqchip_remove(struct gpio_chip *gpiochip)
 
 	/* Remove all IRQ mappings and delete the domain */
 	if (gpiochip->irqdomain) {
-		for (offset = 0; offset < gpiochip->ngpio; offset++) {
-			if (!gpiochip_irqchip_irq_valid(gpiochip, offset))
-				continue;
+		for (offset = 0; offset < gpiochip->ngpio; offset++)
 			irq_dispose_mapping(
 				irq_find_mapping(gpiochip->irqdomain, offset));
-		}
 		irq_domain_remove(gpiochip->irqdomain);
 	}
 
@@ -697,8 +642,6 @@ static void gpiochip_irqchip_remove(struct gpio_chip *gpiochip)
 		gpiochip->irqchip->irq_release_resources = NULL;
 		gpiochip->irqchip = NULL;
 	}
-
-	gpiochip_irqchip_free_valid_mask(gpiochip);
 }
 
 /**
@@ -734,7 +677,6 @@ int _gpiochip_irqchip_add(struct gpio_chip *gpiochip,
 			  struct lock_class_key *lock_key)
 {
 	struct device_node *of_node;
-	bool irq_base_set = false;
 	unsigned int offset;
 	unsigned irq_base = 0;
 
@@ -783,17 +725,13 @@ int _gpiochip_irqchip_add(struct gpio_chip *gpiochip,
 	 * necessary to allocate descriptors for all IRQs.
 	 */
 	for (offset = 0; offset < gpiochip->ngpio; offset++) {
-		if (!gpiochip_irqchip_irq_valid(gpiochip, offset))
-			continue;
 		irq_base = irq_create_mapping(gpiochip->irqdomain, offset);
-		if (!irq_base_set) {
+		if (offset == 0)
 			/*
 			 * Store the base into the gpiochip to be used when
 			 * unmapping the irqs.
 			 */
 			gpiochip->irq_base = irq_base;
-			irq_base_set = true;
-		}
 	}
 
 	acpi_gpiochip_request_interrupts(gpiochip);
@@ -805,12 +743,6 @@ EXPORT_SYMBOL_GPL(_gpiochip_irqchip_add);
 #else /* CONFIG_GPIOLIB_IRQCHIP */
 
 static void gpiochip_irqchip_remove(struct gpio_chip *gpiochip) {}
-static inline int gpiochip_irqchip_init_valid_mask(struct gpio_chip *gpiochip)
-{
-	return 0;
-}
-static inline void gpiochip_irqchip_free_valid_mask(struct gpio_chip *gpiochip)
-{ }
 
 #endif /* CONFIG_GPIOLIB_IRQCHIP */
 
@@ -1709,15 +1641,6 @@ void gpiochip_unlock_as_irq(struct gpio_chip *chip, unsigned int offset)
 }
 EXPORT_SYMBOL_GPL(gpiochip_unlock_as_irq);
 
-bool gpiochip_line_is_irq(struct gpio_chip *chip, unsigned int offset)
-{
-	if (offset >= chip->ngpio)
-		return false;
-
-	return test_bit(FLAG_USED_AS_IRQ, &chip->desc[offset].flags);
-}
-EXPORT_SYMBOL_GPL(gpiochip_line_is_irq);
-
 /**
  * gpiod_get_raw_value_cansleep() - return a gpio's raw value
  * @desc: gpio whose value will be returned
@@ -2018,9 +1941,8 @@ static struct gpio_desc *gpiod_find(struct device *dev, const char *con_id,
 
 		if (chip->ngpio <= p->chip_hwnum) {
 			dev_err(dev,
-				"requested GPIO %u (%u) is out of range [0..%u] for chip %s\n",
-				idx, p->chip_hwnum, chip->ngpio - 1,
-				chip->label);
+				"requested GPIO %d is out of range [0..%d] for chip %s\n",
+				idx, chip->ngpio, chip->label);
 			return ERR_PTR(-EINVAL);
 		}
 

@@ -49,30 +49,14 @@ static void perf_output_put_handle(struct perf_output_handle *handle)
 	unsigned long head;
 
 again:
-	/*
-	 * In order to avoid publishing a head value that goes backwards,
-	 * we must ensure the load of @rb->head happens after we've
-	 * incremented @rb->nest.
-	 *
-	 * Otherwise we can observe a @rb->head value before one published
-	 * by an IRQ/NMI happening between the load and the increment.
-	 */
-	barrier();
 	head = local_read(&rb->head);
 
 	/*
-	 * IRQ/NMI can happen here and advance @rb->head, causing our
-	 * load above to be stale.
+	 * IRQ/NMI can happen here, which means we can miss a head update.
 	 */
 
-	/*
-	 * If this isn't the outermost nesting, we don't have to update
-	 * @rb->user_page->data_head.
-	 */
-	if (local_read(&rb->nest) > 1) {
-		local_dec(&rb->nest);
+	if (!local_dec_and_test(&rb->nest))
 		goto out;
-	}
 
 	/*
 	 * Since the mmap() consumer (userspace) can run on a different CPU:
@@ -104,18 +88,9 @@ again:
 	rb->user_page->data_head = head;
 
 	/*
-	 * We must publish the head before decrementing the nest count,
-	 * otherwise an IRQ/NMI can publish a more recent head value and our
-	 * write will (temporarily) publish a stale value.
+	 * Now check if we missed an update -- rely on previous implied
+	 * compiler barriers to force a re-read.
 	 */
-	barrier();
-	local_set(&rb->nest, 0);
-
-	/*
-	 * Ensure we decrement @rb->nest before we validate the @rb->head.
-	 * Otherwise we cannot be sure we caught the 'last' nested update.
-	 */
-	barrier();
 	if (unlikely(head != local_read(&rb->head))) {
 		local_inc(&rb->nest);
 		goto again;
@@ -247,8 +222,6 @@ void perf_output_end(struct perf_output_handle *handle)
 	rcu_read_unlock();
 }
 
-static void rb_irq_work(struct irq_work *work);
-
 static void
 ring_buffer_init(struct ring_buffer *rb, long watermark, int flags)
 {
@@ -269,16 +242,6 @@ ring_buffer_init(struct ring_buffer *rb, long watermark, int flags)
 
 	INIT_LIST_HEAD(&rb->event_list);
 	spin_lock_init(&rb->event_lock);
-	init_irq_work(&rb->irq_work, rb_irq_work);
-}
-
-static void ring_buffer_put_async(struct ring_buffer *rb)
-{
-	if (!atomic_dec_and_test(&rb->refcount))
-		return;
-
-	rb->rcu_head.next = (void *)rb;
-	irq_work_queue(&rb->irq_work);
 }
 
 /*
@@ -290,6 +253,10 @@ static void ring_buffer_put_async(struct ring_buffer *rb)
  * The ordering is similar to that of perf_output_{begin,end}, with
  * the exception of (B), which should be taken care of by the pmu
  * driver, since ordering rules will differ depending on hardware.
+ *
+ * Call this from pmu::start(); see the comment in perf_aux_output_end()
+ * about its use in pmu callbacks. Both can also be called from the PMI
+ * handler if needed.
  */
 void *perf_aux_output_begin(struct perf_output_handle *handle,
 			    struct perf_event *event)
@@ -318,7 +285,7 @@ void *perf_aux_output_begin(struct perf_output_handle *handle,
 	 * the aux buffer is in perf_mmap_close(), about to get freed.
 	 */
 	if (!atomic_read(&rb->aux_mmap_count))
-		goto err;
+		goto err_put;
 
 	/*
 	 * Nesting is not supported for AUX area, make sure nested
@@ -361,10 +328,11 @@ void *perf_aux_output_begin(struct perf_output_handle *handle,
 	return handle->rb->aux_priv;
 
 err_put:
+	/* can't be last */
 	rb_free_aux(rb);
 
 err:
-	ring_buffer_put_async(rb);
+	ring_buffer_put(rb);
 	handle->event = NULL;
 
 	return NULL;
@@ -375,6 +343,10 @@ err:
  * aux_head and posting a PERF_RECORD_AUX into the perf buffer. It is the
  * pmu driver's responsibility to observe ordering rules of the hardware,
  * so that all the data is externally visible before this is called.
+ *
+ * Note: this has to be called from pmu::stop() callback, as the assumption
+ * of the AUX buffer management code is that after pmu::stop(), the AUX
+ * transaction must be stopped and therefore drop the AUX reference count.
  */
 void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size,
 			 bool truncated)
@@ -422,8 +394,9 @@ void perf_aux_output_end(struct perf_output_handle *handle, unsigned long size,
 	handle->event = NULL;
 
 	local_set(&rb->aux_nest, 0);
+	/* can't be last */
 	rb_free_aux(rb);
-	ring_buffer_put_async(rb);
+	ring_buffer_put(rb);
 }
 
 /*
@@ -504,6 +477,14 @@ static void __rb_free_aux(struct ring_buffer *rb)
 {
 	int pg;
 
+	/*
+	 * Should never happen, the last reference should be dropped from
+	 * perf_mmap_close() path, which first stops aux transactions (which
+	 * in turn are the atomic holders of aux_refcount) and then does the
+	 * last rb_free_aux().
+	 */
+	WARN_ON_ONCE(in_atomic());
+
 	if (rb->aux_priv) {
 		rb->free_aux(rb->aux_priv);
 		rb->free_aux = NULL;
@@ -582,7 +563,7 @@ int rb_alloc_aux(struct ring_buffer *rb, struct perf_event *event,
 			goto out;
 	}
 
-	rb->aux_priv = event->pmu->setup_aux(event->cpu, rb->aux_pages, nr_pages,
+	rb->aux_priv = event->pmu->setup_aux(event, rb->aux_pages, nr_pages,
 					     overwrite);
 	if (!rb->aux_priv)
 		goto out;
@@ -615,18 +596,7 @@ out:
 void rb_free_aux(struct ring_buffer *rb)
 {
 	if (atomic_dec_and_test(&rb->aux_refcount))
-		irq_work_queue(&rb->irq_work);
-}
-
-static void rb_irq_work(struct irq_work *work)
-{
-	struct ring_buffer *rb = container_of(work, struct ring_buffer, irq_work);
-
-	if (!atomic_read(&rb->aux_refcount))
 		__rb_free_aux(rb);
-
-	if (rb->rcu_head.next == (void *)rb)
-		call_rcu(&rb->rcu_head, rb_free_rcu);
 }
 
 #ifndef CONFIG_PERF_USE_VMALLOC
@@ -668,9 +638,6 @@ struct ring_buffer *rb_alloc(int nr_pages, long watermark, int cpu, int flags)
 
 	size = sizeof(struct ring_buffer);
 	size += nr_pages * sizeof(void *);
-
-	if (order_base_2(size) >= PAGE_SHIFT+MAX_ORDER)
-		goto fail;
 
 	rb = kzalloc(size, GFP_KERNEL);
 	if (!rb)

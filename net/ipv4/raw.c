@@ -79,7 +79,6 @@
 #include <linux/netfilter_ipv4.h>
 #include <linux/compat.h>
 #include <linux/uio.h>
-#include <linux/nospec.h>
 
 struct raw_frag_vec {
 	struct msghdr *msg;
@@ -168,7 +167,6 @@ static int icmp_filter(const struct sock *sk, const struct sk_buff *skb)
  */
 static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 {
-	int dif = inet_iif(skb);
 	struct sock *sk;
 	struct hlist_head *head;
 	int delivered = 0;
@@ -181,7 +179,8 @@ static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 
 	net = dev_net(skb->dev);
 	sk = __raw_v4_lookup(net, __sk_head(head), iph->protocol,
-			     iph->saddr, iph->daddr, dif);
+			     iph->saddr, iph->daddr,
+			     skb->dev->ifindex);
 
 	while (sk) {
 		delivered = 1;
@@ -196,7 +195,7 @@ static int raw_v4_input(struct sk_buff *skb, const struct iphdr *iph, int hash)
 		}
 		sk = __raw_v4_lookup(net, sk_next(sk), iph->protocol,
 				     iph->saddr, iph->daddr,
-				     dif);
+				     skb->dev->ifindex);
 	}
 out:
 	read_unlock(&raw_v4_hashinfo.lock);
@@ -383,9 +382,6 @@ static int raw_send_hdrinc(struct sock *sk, struct flowi4 *fl4,
 
 	sock_tx_timestamp(sk, &skb_shinfo(skb)->tx_flags);
 
-	if (flags & MSG_CONFIRM)
-		skb_set_dst_pending_confirm(skb, 1);
-
 	skb->transport_header = skb->network_header;
 	err = -EFAULT;
 	if (memcpy_from_msg(iph, msg, length))
@@ -465,10 +461,7 @@ static int raw_getfrag(void *from, char *to, int offset, int len, int odd,
 	struct raw_frag_vec *rfv = from;
 
 	if (offset < rfv->hlen) {
-		int copy;
-
-		offset = array_index_nospec(offset, rfv->hlen); /* needed? */
-		copy = min(rfv->hlen - offset, len);
+		int copy = min(rfv->hlen - offset, len);
 
 		if (skb->ip_summed == CHECKSUM_PARTIAL)
 			memcpy(to, rfv->hdr.c + offset, copy);
@@ -616,7 +609,7 @@ static int raw_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 			   hdrincl ? IPPROTO_RAW : sk->sk_protocol,
 			   inet_sk_flowi_flags(sk) |
 			    (hdrincl ? FLOWI_FLAG_KNOWN_NH : 0),
-			   daddr, saddr, 0, 0);
+			   daddr, saddr, 0, 0, sk->sk_uid);
 
 	if (!saddr && ipc.oif) {
 		err = l3mdev_get_saddr(net, ipc.oif, &fl4);
@@ -682,8 +675,7 @@ out:
 	return len;
 
 do_confirm:
-	if (msg->msg_flags & MSG_PROBE)
-		dst_confirm_neigh(&rt->dst, &fl4.daddr);
+	dst_confirm(&rt->dst);
 	if (!(msg->msg_flags & MSG_PROBE) || len)
 		goto back_from_confirm;
 	err = 0;

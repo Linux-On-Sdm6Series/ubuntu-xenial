@@ -378,6 +378,7 @@ static noinline int btrfs_ioctl_fitrim(struct file *file, void __user *arg)
 	struct fstrim_range range;
 	u64 minlen = ULLONG_MAX;
 	u64 num_devices = 0;
+	u64 total_bytes = btrfs_super_total_bytes(fs_info->super_copy);
 	int ret;
 
 	if (!capable(CAP_SYS_ADMIN))
@@ -401,15 +402,11 @@ static noinline int btrfs_ioctl_fitrim(struct file *file, void __user *arg)
 		return -EOPNOTSUPP;
 	if (copy_from_user(&range, arg, sizeof(range)))
 		return -EFAULT;
-
-	/*
-	 * NOTE: Don't truncate the range using super->total_bytes.  Bytenr of
-	 * block group is in the logical address space, which can be any
-	 * sectorsize aligned bytenr in  the range [0, U64_MAX].
-	 */
-	if (range.len < fs_info->sb->s_blocksize)
+	if (range.start > total_bytes ||
+	    range.len < fs_info->sb->s_blocksize)
 		return -EINVAL;
 
+	range.len = min(range.len, total_bytes - range.start);
 	range.minlen = max(range.minlen, minlen);
 	ret = btrfs_trim_fs(fs_info->tree_root, &range);
 	if (ret < 0)
@@ -594,18 +591,12 @@ static noinline int create_subvol(struct inode *dir,
 
 	btrfs_i_size_write(dir, dir->i_size + namelen * 2);
 	ret = btrfs_update_inode(trans, root, dir);
-	if (ret) {
-		btrfs_abort_transaction(trans, root, ret);
-		goto fail;
-	}
+	BUG_ON(ret);
 
 	ret = btrfs_add_root_ref(trans, root->fs_info->tree_root,
 				 objectid, root->root_key.objectid,
 				 btrfs_ino(dir), index, name, namelen);
-	if (ret) {
-		btrfs_abort_transaction(trans, root, ret);
-		goto fail;
-	}
+	BUG_ON(ret);
 
 	ret = btrfs_uuid_tree_add(trans, root->fs_info->uuid_root,
 				  root_item.uuid, BTRFS_UUID_KEY_SUBVOL,
@@ -1530,7 +1521,7 @@ static noinline int btrfs_ioctl_resize(struct file *file,
 		btrfs_info(root->fs_info, "resizing devid %llu", devid);
 	}
 
-	device = btrfs_find_device(root->fs_info->fs_devices, devid, NULL, NULL, true);
+	device = btrfs_find_device(root->fs_info, devid, NULL, NULL);
 	if (!device) {
 		btrfs_info(root->fs_info, "resizer unable to find device %llu",
 		       devid);
@@ -2772,8 +2763,7 @@ static long btrfs_ioctl_dev_info(struct btrfs_root *root, void __user *arg)
 		s_uuid = di_args->uuid;
 
 	mutex_lock(&fs_devices->device_list_mutex);
-	dev = btrfs_find_device(fs_devices, di_args->devid, s_uuid,
-				NULL, true);
+	dev = btrfs_find_device(root->fs_info, di_args->devid, s_uuid, NULL);
 
 	if (!dev) {
 		ret = -ENODEV;
@@ -3960,17 +3950,9 @@ static noinline long btrfs_ioctl_clone(struct file *file, unsigned long srcfd,
 		goto out_unlock;
 	if (len == 0)
 		olen = len = src->i_size - off;
-	/*
-	 * If we extend to eof, continue to block boundary if and only if the
-	 * destination end offset matches the destination file's size, otherwise
-	 * we would be corrupting data by placing the eof block into the middle
-	 * of a file.
-	 */
-	if (off + len == src->i_size) {
-		if (!IS_ALIGNED(len, bs) && destoff + len < inode->i_size)
-			goto out_unlock;
+	/* if we extend to eof, continue to block boundary */
+	if (off + len == src->i_size)
 		len = ALIGN(src->i_size, bs) - off;
-	}
 
 	if (len == 0) {
 		ret = 0;
@@ -5698,26 +5680,3 @@ long btrfs_ioctl(struct file *file, unsigned int
 
 	return -ENOTTY;
 }
-
-#ifdef CONFIG_COMPAT
-long btrfs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
-{
-	/*
-	 * These all access 32-bit values anyway so no further
-	 * handling is necessary.
-	 */
-	switch (cmd) {
-	case FS_IOC32_GETFLAGS:
-		cmd = FS_IOC_GETFLAGS;
-		break;
-	case FS_IOC32_SETFLAGS:
-		cmd = FS_IOC_SETFLAGS;
-		break;
-	case FS_IOC32_GETVERSION:
-		cmd = FS_IOC_GETVERSION;
-		break;
-	}
-
-	return btrfs_ioctl(file, cmd, (unsigned long) compat_ptr(arg));
-}
-#endif

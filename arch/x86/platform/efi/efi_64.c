@@ -30,7 +30,6 @@
 #include <linux/slab.h>
 
 #include <asm/setup.h>
-#include <asm/sections.h>
 #include <asm/page.h>
 #include <asm/e820.h>
 #include <asm/pgtable.h>
@@ -145,7 +144,7 @@ void efi_sync_low_kernel_mappings(void)
 
 int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
-	unsigned long pfn, text;
+	unsigned long text;
 	struct page *page;
 	unsigned npages;
 	pgd_t *pgd;
@@ -162,8 +161,7 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	 * and ident-map those pages containing the map before calling
 	 * phys_efi_set_virtual_address_map().
 	 */
-	pfn = pa_memmap >> PAGE_SHIFT;
-	if (kernel_map_pages_in_pgd(pgd, pfn, pa_memmap, num_pages, _PAGE_NX)) {
+	if (kernel_map_pages_in_pgd(pgd, pa_memmap, pa_memmap, num_pages, _PAGE_NX)) {
 		pr_err("Error ident-mapping new memmap (0x%lx)!\n", pa_memmap);
 		return 1;
 	}
@@ -188,9 +186,8 @@ int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 
 	npages = (_end - _text) >> PAGE_SHIFT;
 	text = __pa(_text);
-	pfn = text >> PAGE_SHIFT;
 
-	if (kernel_map_pages_in_pgd(pgd, pfn, text, npages, 0)) {
+	if (kernel_map_pages_in_pgd(pgd, text >> PAGE_SHIFT, text, npages, 0)) {
 		pr_err("Failed to map kernel text 1:1\n");
 		return 1;
 	}
@@ -208,14 +205,12 @@ void __init efi_cleanup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 static void __init __map_region(efi_memory_desc_t *md, u64 va)
 {
 	pgd_t *pgd = (pgd_t *)__va(real_mode_header->trampoline_pgd);
-	unsigned long flags = 0;
-	unsigned long pfn;
+	unsigned long pf = 0;
 
 	if (!(md->attribute & EFI_MEMORY_WB))
-		flags |= _PAGE_PCD;
+		pf |= _PAGE_PCD;
 
-	pfn = md->phys_addr >> PAGE_SHIFT;
-	if (kernel_map_pages_in_pgd(pgd, pfn, va, md->num_pages, flags))
+	if (kernel_map_pages_in_pgd(pgd, md->phys_addr, va, md->num_pages, pf))
 		pr_warn("Error mapping PA 0x%llx -> VA 0x%llx!\n",
 			   md->phys_addr, va);
 }
@@ -358,13 +353,13 @@ extern efi_status_t efi64_thunk(u32, ...);
 	efi_scratch.prev_cr3 = read_cr3();				\
 	write_cr3((unsigned long)efi_scratch.efi_pgt);			\
 	__flush_tlb_all();						\
-	firmware_restrict_branch_speculation_end();			\
 									\
 	func = runtime_service32(f);					\
 	__s = efi64_thunk(func, __VA_ARGS__);			\
 									\
 	write_cr3(efi_scratch.prev_cr3);				\
 	__flush_tlb_all();						\
+	firmware_restrict_branch_speculation_end();			\
 	local_irq_restore(flags);					\
 									\
 	__s;								\

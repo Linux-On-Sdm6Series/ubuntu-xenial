@@ -518,28 +518,11 @@ static void prio_io(struct cache *ca, uint64_t bucket, unsigned long rw)
 	closure_sync(cl);
 }
 
-int bch_prio_write(struct cache *ca, bool wait)
+void bch_prio_write(struct cache *ca)
 {
 	int i;
 	struct bucket *b;
 	struct closure cl;
-
-	pr_debug("free_prio=%zu, free_none=%zu, free_inc=%zu",
-		 fifo_used(&ca->free[RESERVE_PRIO]),
-		 fifo_used(&ca->free[RESERVE_NONE]),
-		 fifo_used(&ca->free_inc));
-
-	/*
-	 * Pre-check if there are enough free buckets. In the non-blocking
-	 * scenario it's better to fail early rather than starting to allocate
-	 * buckets and do a cleanup later in case of failure.
-	 */
-	if (!wait) {
-		size_t avail = fifo_used(&ca->free[RESERVE_PRIO]) +
-			       fifo_used(&ca->free[RESERVE_NONE]);
-		if (prio_buckets(ca) > avail)
-			return -ENOMEM;
-	}
 
 	closure_init_stack(&cl);
 
@@ -549,6 +532,9 @@ int bch_prio_write(struct cache *ca, bool wait)
 
 	atomic_long_add(ca->sb.bucket_size * prio_buckets(ca),
 			&ca->meta_sectors_written);
+
+	//pr_debug("free %zu, free_inc %zu, unused %zu", fifo_used(&ca->free),
+	//	 fifo_used(&ca->free_inc), fifo_used(&ca->unused));
 
 	for (i = prio_buckets(ca) - 1; i >= 0; --i) {
 		long bucket;
@@ -567,7 +553,7 @@ int bch_prio_write(struct cache *ca, bool wait)
 		p->magic	= pset_magic(&ca->sb);
 		p->csum		= bch_crc64(&p->magic, bucket_bytes(ca) - 8);
 
-		bucket = bch_bucket_alloc(ca, RESERVE_PRIO, wait);
+		bucket = bch_bucket_alloc(ca, RESERVE_PRIO, true);
 		BUG_ON(bucket == -1);
 
 		mutex_unlock(&ca->set->bucket_lock);
@@ -596,7 +582,6 @@ int bch_prio_write(struct cache *ca, bool wait)
 
 		ca->prio_last_buckets[i] = ca->prio_buckets[i];
 	}
-	return 0;
 }
 
 static void prio_read(struct cache *ca, uint64_t bucket)
@@ -849,7 +834,7 @@ static void calc_cached_dev_sectors(struct cache_set *c)
 	c->cached_dev_sectors = sectors;
 }
 
-void bch_cached_dev_emit_change(struct cached_dev *dc)
+void bch_cached_dev_run(struct cached_dev *dc)
 {
 	struct bcache_device *d = &dc->disk;
 	char buf[SB_LABEL_SIZE + 1];
@@ -864,18 +849,9 @@ void bch_cached_dev_emit_change(struct cached_dev *dc)
 	buf[SB_LABEL_SIZE] = '\0';
 	env[2] = kasprintf(GFP_KERNEL, "CACHED_LABEL=%s", buf);
 
-	/* won't show up in the uevent file, use udevadm monitor -e instead
-	 * only class / kset properties are persistent */
-	kobject_uevent_env(&disk_to_dev(d->disk)->kobj, KOBJ_CHANGE, env);
-	kfree(env[1]);
-	kfree(env[2]);
-
-}
-
-void bch_cached_dev_run(struct cached_dev *dc)
-{
-	struct bcache_device *d = &dc->disk;
 	if (atomic_xchg(&dc->running, 1)) {
+		kfree(env[1]);
+		kfree(env[2]);
 		return;
 	}
 
@@ -891,9 +867,11 @@ void bch_cached_dev_run(struct cached_dev *dc)
 
 	add_disk(d->disk);
 	bd_link_disk_holder(dc->bdev, dc->disk.disk);
-
-	/* emit change event */
-	bch_cached_dev_emit_change(dc);
+	/* won't show up in the uevent file, use udevadm monitor -e instead
+	 * only class / kset properties are persistent */
+	kobject_uevent_env(&disk_to_dev(d->disk)->kobj, KOBJ_CHANGE, env);
+	kfree(env[1]);
+	kfree(env[2]);
 
 	if (sysfs_create_link(&d->kobj, &disk_to_dev(d->disk)->kobj, "dev") ||
 	    sysfs_create_link(&disk_to_dev(d->disk)->kobj, &d->kobj, "bcache"))
@@ -924,7 +902,6 @@ static void cached_dev_detach_finish(struct work_struct *w)
 	bch_write_bdev_super(dc, &cl);
 	closure_sync(&cl);
 
-	calc_cached_dev_sectors(dc->disk.c);
 	bcache_device_detach(&dc->disk);
 	list_move(&dc->list, &uncached_devices);
 
@@ -1378,7 +1355,6 @@ static void cache_set_free(struct closure *cl)
 	bch_btree_cache_free(c);
 	bch_journal_free(c);
 
-	mutex_lock(&bch_register_lock);
 	for_each_cache(ca, c, i)
 		if (ca) {
 			ca->set = NULL;
@@ -1401,6 +1377,7 @@ static void cache_set_free(struct closure *cl)
 		mempool_destroy(c->search);
 	kfree(c->devices);
 
+	mutex_lock(&bch_register_lock);
 	list_del(&c->list);
 	mutex_unlock(&bch_register_lock);
 
@@ -1426,7 +1403,7 @@ static void cache_set_flush(struct closure *cl)
 	kobject_put(&c->internal);
 	kobject_del(&c->kobj);
 
-	if (!IS_ERR_OR_NULL(c->gc_thread))
+	if (c->gc_thread)
 		kthread_stop(c->gc_thread);
 
 	if (!IS_ERR_OR_NULL(c->root))
@@ -1581,7 +1558,7 @@ err:
 	return NULL;
 }
 
-static int run_cache_set(struct cache_set *c)
+static void run_cache_set(struct cache_set *c)
 {
 	const char *err = "cannot allocate memory";
 	struct cached_dev *dc, *t;
@@ -1673,9 +1650,7 @@ static int run_cache_set(struct cache_set *c)
 		if (j->version < BCACHE_JSET_VERSION_UUID)
 			__uuid_write(c);
 
-		err = "bcache: replay journal failed";
-		if (bch_journal_replay(c, &journal))
-			goto err;
+		bch_journal_replay(c, &journal);
 	} else {
 		pr_notice("invalidating existing data");
 
@@ -1698,7 +1673,7 @@ static int run_cache_set(struct cache_set *c)
 
 		mutex_lock(&c->bucket_lock);
 		for_each_cache(ca, c, i)
-			bch_prio_write(ca, true);
+			bch_prio_write(ca);
 		mutex_unlock(&c->bucket_lock);
 
 		err = "cannot allocate new UUID bucket";
@@ -1743,13 +1718,11 @@ static int run_cache_set(struct cache_set *c)
 	flash_devs_run(c);
 
 	set_bit(CACHE_SET_RUNNING, &c->flags);
-	return 0;
+	return;
 err:
 	closure_sync(&cl);
 	/* XXX: test this, it's broken */
 	bch_cache_set_error(c, "%s", err);
-
-	return -EIO;
 }
 
 static bool can_attach_cache(struct cache *ca, struct cache_set *c)
@@ -1813,11 +1786,8 @@ found:
 	ca->set->cache[ca->sb.nr_this_dev] = ca;
 	c->cache_by_alloc[c->caches_loaded++] = ca;
 
-	if (c->caches_loaded == c->sb.nr_in_set) {
-		err = "failed to run cache set";
-		if (run_cache_set(c) < 0)
-			goto err;
-	}
+	if (c->caches_loaded == c->sb.nr_in_set)
+		run_cache_set(c);
 
 	return NULL;
 err:
@@ -1976,21 +1946,6 @@ static bool bch_is_open_backing(struct block_device *bdev) {
 	return false;
 }
 
-static struct cached_dev *bch_find_cached_dev(struct block_device *bdev) {
-	struct cache_set *c, *tc;
-	struct cached_dev *dc, *t;
-
-	list_for_each_entry_safe(c, tc, &bch_cache_sets, list)
-		list_for_each_entry_safe(dc, t, &c->cached_devs, list)
-			if (dc->bdev == bdev)
-				return dc;
-	list_for_each_entry_safe(dc, t, &uncached_devices, list)
-		if (dc->bdev == bdev)
-			return dc;
-
-	return NULL;
-}
-
 static bool bch_is_open_cache(struct block_device *bdev) {
 	struct cache_set *c, *tc;
 	struct cache *ca;
@@ -2016,7 +1971,6 @@ static ssize_t register_bcache(struct kobject *k, struct kobj_attribute *attr,
 	struct cache_sb *sb = NULL;
 	struct block_device *bdev = NULL;
 	struct page *sb_page = NULL;
-	struct cached_dev *dc = NULL;
 
 	if (!try_module_get(THIS_MODULE))
 		return -EBUSY;
@@ -2031,22 +1985,12 @@ static ssize_t register_bcache(struct kobject *k, struct kobj_attribute *attr,
 				  sb);
 	if (IS_ERR(bdev)) {
 		if (bdev == ERR_PTR(-EBUSY)) {
-			bdev = lookup_bdev(strim(path), 0);
+			bdev = lookup_bdev(strim(path));
 			mutex_lock(&bch_register_lock);
-			if (!IS_ERR(bdev) && bch_is_open(bdev)) {
+			if (!IS_ERR(bdev) && bch_is_open(bdev))
 				err = "device already registered";
-				/* emit CHANGE event for backing devices to export
-				 * CACHED_{UUID/LABEL} values to udev */
-				if (bch_is_open_backing(bdev)) {
-					dc = bch_find_cached_dev(bdev);
-					if (dc) {
-						bch_cached_dev_emit_change(dc);
-						err = "device already registered (emitting change event)";
-					}
-				}
-			} else {
+			else
 				err = "device busy";
-            }
 			mutex_unlock(&bch_register_lock);
 			if (!IS_ERR(bdev))
 				bdput(bdev);
@@ -2122,19 +2066,10 @@ static int bcache_reboot(struct notifier_block *n, unsigned long code, void *x)
 		list_for_each_entry_safe(dc, tdc, &uncached_devices, list)
 			bcache_device_stop(&dc->disk);
 
-		mutex_unlock(&bch_register_lock);
-
-		/*
-		 * Give an early chance for other kthreads and
-		 * kworkers to stop themselves
-		 */
-		schedule();
-
 		/* What's a condition variable? */
 		while (1) {
-			long timeout = start + 10 * HZ - jiffies;
+			long timeout = start + 2 * HZ - jiffies;
 
-			mutex_lock(&bch_register_lock);
 			stopped = list_empty(&bch_cache_sets) &&
 				list_empty(&uncached_devices);
 
@@ -2146,6 +2081,7 @@ static int bcache_reboot(struct notifier_block *n, unsigned long code, void *x)
 
 			mutex_unlock(&bch_register_lock);
 			schedule_timeout(timeout);
+			mutex_lock(&bch_register_lock);
 		}
 
 		finish_wait(&unregister_wait, &wait);

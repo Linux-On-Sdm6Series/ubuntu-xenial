@@ -1,8 +1,6 @@
 #ifndef _ASM_X86_MSR_INDEX_H
 #define _ASM_X86_MSR_INDEX_H
 
-#include <linux/bits.h>
-
 /* CPU model specific register (MSR) numbers */
 
 /* x86-64 specific MSRs */
@@ -35,15 +33,13 @@
 
 /* Intel MSRs. Some also available on other CPUs */
 #define MSR_IA32_SPEC_CTRL		0x00000048 /* Speculation Control */
-#define SPEC_CTRL_IBRS_SHIFT		0	   /* Indirect Branch Restricted Speculation bit */
-#define SPEC_CTRL_IBRS			BIT(SPEC_CTRL_IBRS_SHIFT)	   /* Indirect Branch Restricted Speculation */
-#define SPEC_CTRL_STIBP_SHIFT		1	   /* Single Thread Indirect Branch Predictor (STIBP) bit */
-#define SPEC_CTRL_STIBP			BIT(SPEC_CTRL_STIBP_SHIFT)	/* STIBP mask */
+#define SPEC_CTRL_IBRS			(1 << 0)   /* Indirect Branch Restricted Speculation */
+#define SPEC_CTRL_STIBP			(1 << 1)   /* Single Thread Indirect Branch Predictors */
 #define SPEC_CTRL_SSBD_SHIFT		2	   /* Speculative Store Bypass Disable bit */
-#define SPEC_CTRL_SSBD			BIT(SPEC_CTRL_SSBD_SHIFT)	/* Speculative Store Bypass Disable */
+#define SPEC_CTRL_SSBD			(1 << SPEC_CTRL_SSBD_SHIFT)   /* Speculative Store Bypass Disable */
 
 #define MSR_IA32_PRED_CMD		0x00000049 /* Prediction Command */
-#define PRED_CMD_IBPB			BIT(0)	   /* Indirect Branch Prediction Barrier */
+#define PRED_CMD_IBPB			(1 << 0)   /* Indirect Branch Prediction Barrier */
 
 #define MSR_IA32_PERFCTR0		0x000000c1
 #define MSR_IA32_PERFCTR1		0x000000c2
@@ -60,44 +56,16 @@
 #define MSR_MTRRcap			0x000000fe
 
 #define MSR_IA32_ARCH_CAPABILITIES	0x0000010a
-#define ARCH_CAP_RDCL_NO		BIT(0)	/* Not susceptible to Meltdown */
-#define ARCH_CAP_IBRS_ALL		BIT(1)	/* Enhanced IBRS support */
-#define ARCH_CAP_SKIP_VMENTRY_L1DFLUSH	BIT(3)	/* Skip L1D flush on vmentry */
-#define ARCH_CAP_SSB_NO			BIT(4)	/*
-						 * Not susceptible to Speculative Store Bypass
-						 * attack, so no Speculative Store Bypass
-						 * control required.
-						 */
-#define ARCH_CAP_MDS_NO			BIT(5)   /*
-						  * Not susceptible to
-						  * Microarchitectural Data
-						  * Sampling (MDS) vulnerabilities.
-						  */
-#define ARCH_CAP_PSCHANGE_MC_NO		BIT(6)	 /*
-						  * The processor is not susceptible to a
-						  * machine check error due to modifying the
-						  * code page size along with either the
-						  * physical address or cache type
-						  * without TLB invalidation.
-						  */
-#define ARCH_CAP_TSX_CTRL_MSR		BIT(7)	/* MSR for TSX control is available. */
-#define ARCH_CAP_TAA_NO			BIT(8)	/*
-						 * Not susceptible to
-						 * TSX Async Abort (TAA) vulnerabilities.
-						 */
-
-#define MSR_IA32_FLUSH_CMD		0x0000010b
-#define L1D_FLUSH			BIT(0)	/*
-						 * Writeback and invalidate the
-						 * L1 data cache.
-						 */
+#define ARCH_CAP_RDCL_NO		(1 << 0)   /* Not susceptible to Meltdown */
+#define ARCH_CAP_IBRS_ALL		(1 << 1)   /* Enhanced IBRS support */
+#define ARCH_CAP_SSB_NO			(1 << 4)   /*
+						    * Not susceptible to Speculative Store Bypass
+						    * attack, so no Speculative Store Bypass
+						    * control required.
+						    */
 
 #define MSR_IA32_BBL_CR_CTL		0x00000119
 #define MSR_IA32_BBL_CR_CTL3		0x0000011e
-
-#define MSR_IA32_TSX_CTRL		0x00000122
-#define TSX_CTRL_RTM_DISABLE		BIT(0)	/* Disable RTM feature */
-#define TSX_CTRL_CPUID_CLEAR		BIT(1)	/* Disable TSX enumeration */
 
 #define MSR_IA32_SYSENTER_CS		0x00000174
 #define MSR_IA32_SYSENTER_ESP		0x00000175
@@ -213,14 +181,6 @@
 #define MSR_PKG_C8_RESIDENCY		0x00000630
 #define MSR_PKG_C9_RESIDENCY		0x00000631
 #define MSR_PKG_C10_RESIDENCY		0x00000632
-
-/* Interrupt Response Limit */
-#define MSR_PKGC3_IRTL			0x0000060a
-#define MSR_PKGC6_IRTL			0x0000060b
-#define MSR_PKGC7_IRTL			0x0000060c
-#define MSR_PKGC8_IRTL			0x00000633
-#define MSR_PKGC9_IRTL			0x00000634
-#define MSR_PKGC10_IRTL			0x00000635
 
 /* Run Time Average Power Limiting (RAPL) Interface */
 
@@ -343,7 +303,6 @@
 #define MSR_AMD64_PATCH_LEVEL		0x0000008b
 #define MSR_AMD64_TSC_RATIO		0xc0000104
 #define MSR_AMD64_NB_CFG		0xc001001f
-#define MSR_AMD64_CPUID_FN_1		0xc0011004
 #define MSR_AMD64_PATCH_LOADER		0xc0010020
 #define MSR_AMD64_OSVW_ID_LENGTH	0xc0010140
 #define MSR_AMD64_OSVW_STATUS		0xc0010141
@@ -384,8 +343,6 @@
 #define MSR_F15H_PERF_CTR		0xc0010201
 #define MSR_F15H_NB_PERF_CTL		0xc0010240
 #define MSR_F15H_NB_PERF_CTR		0xc0010241
-#define MSR_F15H_IC_CFG			0xc0011021
-#define MSR_F15H_IC_CFG_DIS_IND		BIT_ULL(14)
 
 /* Fam 10h MSRs */
 #define MSR_FAM10H_MMIO_CONF_BASE	0xc0010058

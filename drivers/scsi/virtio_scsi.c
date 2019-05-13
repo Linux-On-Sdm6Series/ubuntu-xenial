@@ -571,10 +571,6 @@ static int virtscsi_queuecommand(struct virtio_scsi *vscsi,
 		virtscsi_complete_cmd(vscsi, cmd);
 		spin_unlock_irqrestore(&req_vq->vq_lock, flags);
 	} else if (ret != 0) {
-		/* The SCSI command requeue will increment 'tgt->reqs' again. */
-		struct virtio_scsi_target_state *tgt =
-				scsi_target(sc->device)->hostdata;
-		atomic_dec(&tgt->reqs);
 		return SCSI_MLQUEUE_HOST_BUSY;
 	}
 	return 0;
@@ -592,12 +588,11 @@ static int virtscsi_queuecommand_single(struct Scsi_Host *sh,
 }
 
 static struct virtio_scsi_vq *virtscsi_pick_vq_mq(struct virtio_scsi *vscsi,
-						  struct virtio_scsi_target_state *tgt, struct scsi_cmnd *sc)
+						  struct scsi_cmnd *sc)
 {
 	u32 tag = blk_mq_unique_tag(sc->request);
 	u16 hwq = blk_mq_unique_tag_to_hwq(tag);
 
-	atomic_inc(&tgt->reqs);
 	return &vscsi->req_vqs[hwq];
 }
 
@@ -647,7 +642,7 @@ static int virtscsi_queuecommand_multi(struct Scsi_Host *sh,
 	struct virtio_scsi_vq *req_vq;
 
 	if (shost_use_blk_mq(sh))
-		req_vq = virtscsi_pick_vq_mq(vscsi, tgt, sc);
+		req_vq = virtscsi_pick_vq_mq(vscsi, sc);
 	else
 		req_vq = virtscsi_pick_vq(vscsi, tgt);
 
@@ -697,6 +692,7 @@ static int virtscsi_device_reset(struct scsi_cmnd *sc)
 		return FAILED;
 
 	memset(cmd, 0, sizeof(*cmd));
+	cmd->sc = sc;
 	cmd->req.tmf = (struct virtio_scsi_ctrl_tmf_req){
 		.type = VIRTIO_SCSI_T_TMF,
 		.subtype = cpu_to_virtio32(vscsi->vdev,
@@ -755,6 +751,7 @@ static int virtscsi_abort(struct scsi_cmnd *sc)
 		return FAILED;
 
 	memset(cmd, 0, sizeof(*cmd));
+	cmd->sc = sc;
 	cmd->req.tmf = (struct virtio_scsi_ctrl_tmf_req){
 		.type = VIRTIO_SCSI_T_TMF,
 		.subtype = VIRTIO_SCSI_T_TMF_ABORT_TASK,
@@ -788,10 +785,6 @@ static int virtscsi_target_alloc(struct scsi_target *starget)
 static void virtscsi_target_destroy(struct scsi_target *starget)
 {
 	struct virtio_scsi_target_state *tgt = starget->hostdata;
-
-	/* we can race with concurrent virtscsi_complete_cmd */
-	while (atomic_read(&tgt->reqs))
-		cpu_relax();
 	kfree(tgt);
 }
 

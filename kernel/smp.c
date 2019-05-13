@@ -32,6 +32,9 @@ static DEFINE_PER_CPU_SHARED_ALIGNED(struct call_function_data, cfd_data);
 static DEFINE_PER_CPU_SHARED_ALIGNED(struct llist_head, call_single_queue);
 
 static void flush_smp_call_function_queue(bool warn_cpu_offline);
+/* CPU mask indicating which CPUs to bring online during smp_init() */
+static bool have_boot_cpu_mask;
+static cpumask_var_t boot_cpu_mask;
 
 static int
 hotplug_cfd(struct notifier_block *nfb, unsigned long action, void *hcpu)
@@ -499,6 +502,7 @@ EXPORT_SYMBOL(smp_call_function);
 unsigned int setup_max_cpus = NR_CPUS;
 EXPORT_SYMBOL(setup_max_cpus);
 
+
 /*
  * Setup routine for controlling SMP activation
  *
@@ -547,6 +551,19 @@ static int __init maxcpus(char *str)
 
 early_param("maxcpus", maxcpus);
 
+static int __init boot_cpus(char *str)
+{
+	alloc_bootmem_cpumask_var(&boot_cpu_mask);
+	if (cpulist_parse(str, boot_cpu_mask) < 0) {
+		pr_warn("SMP: Incorrect boot_cpus cpumask\n");
+		return -EINVAL;
+	}
+	have_boot_cpu_mask = true;
+	return 0;
+}
+
+early_param("boot_cpus", boot_cpus);
+
 /* Setup number of possible processor ids */
 int nr_cpu_ids __read_mostly = NR_CPUS;
 EXPORT_SYMBOL(nr_cpu_ids);
@@ -562,6 +579,21 @@ void __weak smp_announce(void)
 	printk(KERN_INFO "Brought up %d CPUs\n", num_online_cpus());
 }
 
+/* Should the given CPU be booted during smp_init() ? */
+static inline bool boot_cpu(int cpu)
+{
+	if (!have_boot_cpu_mask)
+		return true;
+
+	return cpumask_test_cpu(cpu, boot_cpu_mask);
+}
+
+static inline void free_boot_cpu_mask(void)
+{
+	if (have_boot_cpu_mask)	/* Allocated from boot_cpus() */
+		free_bootmem_cpumask_var(boot_cpu_mask);
+}
+
 /* Called by boot processor to activate the rest. */
 void __init smp_init(void)
 {
@@ -573,30 +605,12 @@ void __init smp_init(void)
 	for_each_present_cpu(cpu) {
 		if (num_online_cpus() >= setup_max_cpus)
 			break;
-		if (!cpu_online(cpu))
+		if (!cpu_online(cpu) && boot_cpu(cpu))
 			cpu_up(cpu);
 	}
 
-#ifdef CONFIG_HOTPLUG_SMT
-	/* Handle nosmt[=force] here */
-	if (cpu_smt_control == CPU_SMT_DISABLED ||
-	    cpu_smt_control == CPU_SMT_FORCE_DISABLED) {
-		int ret;
+	free_boot_cpu_mask();
 
-		cpu_maps_update_begin();
-		for_each_online_cpu(cpu) {
-			if (topology_is_primary_thread(cpu))
-				continue;
-			ret = cpu_down_maps_locked(cpu);
-			if (ret)
-				break;
-		}
-		cpu_maps_update_done();
-	}
-#endif
-
-	/* Final decision about SMT support */
-	cpu_smt_check_topology();
 	/* Any cleanup work */
 	smp_announce();
 	smp_cpus_done(setup_max_cpus);
@@ -752,8 +766,8 @@ void wake_up_all_idle_cpus(void)
 	for_each_online_cpu(cpu) {
 		if (cpu == smp_processor_id())
 			continue;
-
-		wake_up_if_idle(cpu);
+		if (!cpu_isolated(cpu))
+			wake_up_if_idle(cpu);
 	}
 	preempt_enable();
 }

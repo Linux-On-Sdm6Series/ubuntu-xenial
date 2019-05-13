@@ -128,8 +128,6 @@ struct cpuinfo_x86 {
 	u16			booted_cores;
 	/* Physical processor id: */
 	u16			phys_proc_id;
-	/* Logical processor id: */
-	u16			logical_proc_id;
 	/* Core id: */
 	u16			cpu_core_id;
 	/* Compute unit id */
@@ -137,8 +135,6 @@ struct cpuinfo_x86 {
 	/* Index into per_cpu list: */
 	u16			cpu_index;
 	u32			microcode;
-	/* Address space bits used by the cache internally */
-	u8			x86_cache_bits;
 };
 
 #define X86_VENDOR_INTEL	0
@@ -176,9 +172,9 @@ extern const struct seq_operations cpuinfo_op;
 
 extern void cpu_detect(struct cpuinfo_x86 *c);
 
-static inline unsigned long long l1tf_pfn_limit(void)
+static inline unsigned long l1tf_pfn_limit(void)
 {
-	return BIT_ULL(boot_cpu_data.x86_cache_bits - 1 - PAGE_SHIFT);
+	return BIT(boot_cpu_data.x86_phys_bits - 1 - PAGE_SHIFT) - 1;
 }
 
 extern void early_cpu_init(void);
@@ -187,14 +183,10 @@ extern void identify_secondary_cpu(struct cpuinfo_x86 *);
 extern void print_cpu_info(struct cpuinfo_x86 *);
 void print_cpu_msr(struct cpuinfo_x86 *);
 extern void init_scattered_cpuid_features(struct cpuinfo_x86 *c);
-extern u32 get_scattered_cpuid_leaf(unsigned int level,
-				    unsigned int sub_leaf,
-				    u8 reg);
 extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
 extern void init_amd_cacheinfo(struct cpuinfo_x86 *c);
-extern int detect_extended_topology_early(struct cpuinfo_x86 *c);
-extern int detect_extended_topology(struct cpuinfo_x86 *c);
-extern int detect_ht_early(struct cpuinfo_x86 *c);
+
+extern void detect_extended_topology(struct cpuinfo_x86 *c);
 extern void detect_ht(struct cpuinfo_x86 *c);
 
 #ifdef CONFIG_X86_32
@@ -851,29 +843,4 @@ bool xen_set_default_idle(void);
 
 void stop_this_cpu(void *dummy);
 void df_debug(struct pt_regs *regs, long error_code);
-
-enum l1tf_mitigations {
-	L1TF_MITIGATION_OFF,
-	L1TF_MITIGATION_FLUSH_NOWARN,
-	L1TF_MITIGATION_FLUSH,
-	L1TF_MITIGATION_FLUSH_NOSMT,
-	L1TF_MITIGATION_FULL,
-	L1TF_MITIGATION_FULL_FORCE
-};
-
-extern enum l1tf_mitigations l1tf_mitigation;
-
-enum mds_mitigations {
-	MDS_MITIGATION_OFF,
-	MDS_MITIGATION_FULL,
-	MDS_MITIGATION_VMWERV,
-};
-
-enum taa_mitigations {
-	TAA_MITIGATION_OFF,
-	TAA_MITIGATION_UCODE_NEEDED,
-	TAA_MITIGATION_VERW,
-	TAA_MITIGATION_TSX_DISABLED,
-};
-
 #endif /* _ASM_X86_PROCESSOR_H */

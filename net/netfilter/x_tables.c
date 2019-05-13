@@ -26,7 +26,6 @@
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/audit.h>
-#include <linux/user_namespace.h>
 #include <net/net_namespace.h>
 
 #include <linux/netfilter/x_tables.h>
@@ -877,7 +876,7 @@ void *xt_copy_counters_from_user(const void __user *user, unsigned int len,
 		if (copy_from_user(&compat_tmp, user, sizeof(compat_tmp)) != 0)
 			return ERR_PTR(-EFAULT);
 
-		memcpy(info->name, compat_tmp.name, sizeof(info->name) - 1);
+		strlcpy(info->name, compat_tmp.name, sizeof(info->name));
 		info->num_counters = compat_tmp.num_counters;
 		user += sizeof(compat_tmp);
 	} else
@@ -890,9 +889,9 @@ void *xt_copy_counters_from_user(const void __user *user, unsigned int len,
 		if (copy_from_user(info, user, sizeof(*info)) != 0)
 			return ERR_PTR(-EFAULT);
 
+		info->name[sizeof(info->name) - 1] = '\0';
 		user += sizeof(*info);
 	}
-	info->name[sizeof(info->name) - 1] = '\0';
 
 	size = sizeof(struct xt_counters);
 	size *= info->num_counters;
@@ -1558,8 +1557,6 @@ int xt_proto_init(struct net *net, u_int8_t af)
 #ifdef CONFIG_PROC_FS
 	char buf[XT_FUNCTION_MAXNAMELEN];
 	struct proc_dir_entry *proc;
-	kuid_t root_uid;
-	kgid_t root_gid;
 #endif
 
 	if (af >= ARRAY_SIZE(xt_prefix))
@@ -1567,17 +1564,12 @@ int xt_proto_init(struct net *net, u_int8_t af)
 
 
 #ifdef CONFIG_PROC_FS
-	root_uid = make_kuid(net->user_ns, 0);
-	root_gid = make_kgid(net->user_ns, 0);
-
 	strlcpy(buf, xt_prefix[af], sizeof(buf));
 	strlcat(buf, FORMAT_TABLES, sizeof(buf));
 	proc = proc_create_data(buf, 0440, net->proc_net, &xt_table_ops,
 				(void *)(unsigned long)af);
 	if (!proc)
 		goto out;
-	if (uid_valid(root_uid) && gid_valid(root_gid))
-		proc_set_user(proc, root_uid, root_gid);
 
 	strlcpy(buf, xt_prefix[af], sizeof(buf));
 	strlcat(buf, FORMAT_MATCHES, sizeof(buf));
@@ -1585,8 +1577,6 @@ int xt_proto_init(struct net *net, u_int8_t af)
 				(void *)(unsigned long)af);
 	if (!proc)
 		goto out_remove_tables;
-	if (uid_valid(root_uid) && gid_valid(root_gid))
-		proc_set_user(proc, root_uid, root_gid);
 
 	strlcpy(buf, xt_prefix[af], sizeof(buf));
 	strlcat(buf, FORMAT_TARGETS, sizeof(buf));
@@ -1594,8 +1584,6 @@ int xt_proto_init(struct net *net, u_int8_t af)
 				(void *)(unsigned long)af);
 	if (!proc)
 		goto out_remove_matches;
-	if (uid_valid(root_uid) && gid_valid(root_gid))
-		proc_set_user(proc, root_uid, root_gid);
 #endif
 
 	return 0;
@@ -1657,35 +1645,35 @@ EXPORT_SYMBOL_GPL(xt_proto_fini);
  * returns false on error.
  */
 bool xt_percpu_counter_alloc(struct xt_percpu_counter_alloc_state *state,
-                            struct xt_counters *counter)
+			     struct xt_counters *counter)
 {
-       BUILD_BUG_ON(XT_PCPU_BLOCK_SIZE < (sizeof(*counter) * 2));
+	BUILD_BUG_ON(XT_PCPU_BLOCK_SIZE < (sizeof(*counter) * 2));
 
-       if (nr_cpu_ids <= 1)
-               return true;
+	if (nr_cpu_ids <= 1)
+		return true;
 
-       if (!state->mem) {
-               state->mem = __alloc_percpu(XT_PCPU_BLOCK_SIZE,
-                                           XT_PCPU_BLOCK_SIZE);
-               if (!state->mem)
-                       return false;
-       }
-       counter->pcnt = (__force unsigned long)(state->mem + state->off);
-       state->off += sizeof(*counter);
-       if (state->off > (XT_PCPU_BLOCK_SIZE - sizeof(*counter))) {
-               state->mem = NULL;
-               state->off = 0;
-       }
-       return true;
+	if (!state->mem) {
+		state->mem = __alloc_percpu(XT_PCPU_BLOCK_SIZE,
+					    XT_PCPU_BLOCK_SIZE);
+		if (!state->mem)
+			return false;
+	}
+	counter->pcnt = (__force unsigned long)(state->mem + state->off);
+	state->off += sizeof(*counter);
+	if (state->off > (XT_PCPU_BLOCK_SIZE - sizeof(*counter))) {
+		state->mem = NULL;
+		state->off = 0;
+	}
+	return true;
 }
 EXPORT_SYMBOL_GPL(xt_percpu_counter_alloc);
 
 void xt_percpu_counter_free(struct xt_counters *counters)
 {
-       unsigned long pcnt = counters->pcnt;
+	unsigned long pcnt = counters->pcnt;
 
-       if (nr_cpu_ids > 1 && (pcnt & (XT_PCPU_BLOCK_SIZE - 1)) == 0)
-               free_percpu((void __percpu *)pcnt);
+	if (nr_cpu_ids > 1 && (pcnt & (XT_PCPU_BLOCK_SIZE - 1)) == 0)
+		free_percpu((void __percpu *)pcnt);
 }
 EXPORT_SYMBOL_GPL(xt_percpu_counter_free);
 
@@ -1711,7 +1699,7 @@ static int __init xt_init(void)
 		seqcount_init(&per_cpu(xt_recseq, i));
 	}
 
-	xt = kcalloc(NFPROTO_NUMPROTO, sizeof(struct xt_af), GFP_KERNEL);
+	xt = kmalloc(sizeof(struct xt_af) * NFPROTO_NUMPROTO, GFP_KERNEL);
 	if (!xt)
 		return -ENOMEM;
 

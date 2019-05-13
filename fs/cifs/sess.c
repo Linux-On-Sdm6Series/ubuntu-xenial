@@ -398,12 +398,6 @@ int build_ntlmssp_auth_blob(unsigned char **pbuffer,
 		goto setup_ntlmv2_ret;
 	}
 	*pbuffer = kmalloc(size_of_ntlmssp_blob(ses), GFP_KERNEL);
-	if (!*pbuffer) {
-		rc = -ENOMEM;
-		cifs_dbg(VFS, "Error %d during NTLMSSP allocation\n", rc);
-		*buflen = 0;
-		goto setup_ntlmv2_ret;
-	}
 	sec_blob = (AUTHENTICATE_MESSAGE *)*pbuffer;
 
 	memcpy(sec_blob->Signature, NTLMSSP_SIGNATURE, 8);
@@ -656,7 +650,6 @@ sess_sendreceive(struct sess_data *sess_data)
 	int rc;
 	struct smb_hdr *smb_buf = (struct smb_hdr *) sess_data->iov[0].iov_base;
 	__u16 count;
-	struct kvec rsp_iov = { NULL, 0 };
 
 	count = sess_data->iov[1].iov_len + sess_data->iov[2].iov_len;
 	smb_buf->smb_buf_length =
@@ -666,9 +659,7 @@ sess_sendreceive(struct sess_data *sess_data)
 	rc = SendReceive2(sess_data->xid, sess_data->ses,
 			  sess_data->iov, 3 /* num_iovecs */,
 			  &sess_data->buf0_type,
-			  CIFS_LOG_ERROR, &rsp_iov);
-	cifs_small_buf_release(sess_data->iov[0].iov_base);
-	memcpy(&sess_data->iov[0], &rsp_iov, sizeof(struct kvec));
+			  CIFS_LOG_ERROR);
 
 	return rc;
 }

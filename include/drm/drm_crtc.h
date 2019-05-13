@@ -61,7 +61,7 @@ struct drm_mode_object {
 	struct drm_object_properties *properties;
 };
 
-#define DRM_OBJECT_MAX_PROPERTY 24
+#define DRM_OBJECT_MAX_PROPERTY 64
 struct drm_object_properties {
 	int count, atomic_count;
 	/* NOTE: if we ever start dynamically destroying properties (ie.
@@ -259,20 +259,11 @@ struct drm_atomic_state;
  * @mode_changed: crtc_state->mode or crtc_state->enable has been changed
  * @active_changed: crtc_state->active has been toggled.
  * @connectors_changed: connectors to this crtc have been updated
- * @color_mgmt_changed: color management properties have changed (degamma or
- *	gamma LUT or CSC matrix)
  * @plane_mask: bitmask of (1 << drm_plane_index(plane)) of attached planes
- * @connector_mask: bitmask of (1 << drm_connector_index(connector)) of attached connectors
- * @encoder_mask: bitmask of (1 << drm_encoder_index(encoder)) of attached encoders
  * @last_vblank_count: for helpers and drivers to capture the vblank of the
  * 	update to ensure framebuffer cleanup isn't done too early
  * @adjusted_mode: for use by helpers and drivers to compute adjusted mode timings
  * @mode: current mode timings
- * @degamma_lut: Lookup table for converting framebuffer pixel data
- *	before apply the conversion matrix
- * @ctm: Transformation matrix
- * @gamma_lut: Lookup table for converting pixel data after the
- *	conversion matrix
  * @event: optional pointer to a DRM event to signal upon completion of the
  * 	state update
  * @state: backpointer to global drm_atomic_state
@@ -294,7 +285,6 @@ struct drm_crtc_state {
 	bool mode_changed : 1;
 	bool active_changed : 1;
 	bool connectors_changed : 1;
-	bool color_mgmt_changed : 1;
 
 	/* attached planes bitmask:
 	 * WARNING: transitional helpers do not maintain plane_mask so
@@ -302,9 +292,6 @@ struct drm_crtc_state {
 	 * on plane_mask being accurate!
 	 */
 	u32 plane_mask;
-
-	u32 connector_mask;
-	u32 encoder_mask;
 
 	/* last_vblank_count: for vblank waits before cleanup */
 	u32 last_vblank_count;
@@ -316,11 +303,6 @@ struct drm_crtc_state {
 
 	/* blob property to expose current mode to atomic userspace */
 	struct drm_property_blob *mode_blob;
-
-	/* blob property to expose color management to userspace */
-	struct drm_property_blob *degamma_lut;
-	struct drm_property_blob *ctm;
-	struct drm_property_blob *gamma_lut;
 
 	struct drm_pending_vblank_event *event;
 
@@ -476,7 +458,7 @@ struct drm_crtc {
 	int x, y;
 	const struct drm_crtc_funcs *funcs;
 
-	/* Legacy FB CRTC gamma size for reporting to userspace */
+	/* CRTC gamma size for reporting to userspace */
 	uint32_t gamma_size;
 	uint16_t *gamma_store;
 
@@ -662,6 +644,23 @@ struct drm_encoder {
  * @audio_latency: audio latency info from ELD, if found
  * @null_edid_counter: track sinks that give us all zeros for the EDID
  * @bad_edid_counter: track sinks that give us an EDID with invalid checksum
+ * @max_tmds_char: indicates the maximum TMDS Character Rate supported
+ * @scdc_present: when set the sink supports SCDC functionality
+ * @rr_capable: when set the sink is capable of initiating an SCDC read request
+ * @supports_scramble: when set the sink supports less than 340Mcsc scrambling
+ * @flags_3d: 3D view(s) supported by the sink, see drm_edid.h (DRM_EDID_3D_*)
+ * @pt_scan_info: PT scan info obtained from the VCDB of EDID
+ * @it_scan_info: IT scan info obtained from the VCDB of EDID
+ * @ce_scan_info: CE scan info obtained from the VCDB of EDID
+ * @color_enc_fmt: Colorimetry encoding formats of sink
+ * @hdr_eotf: Electro optical transfer function obtained from HDR block
+ * @hdr_metadata_type_one: Metadata type one obtained from HDR block
+ * @hdr_max_luminance: desired max luminance obtained from HDR block
+ * @hdr_avg_luminance: desired avg luminance obtained from HDR block
+ * @hdr_min_luminance: desired min luminance obtained from HDR block
+ * @hdr_supported: does the sink support HDR content
+ * @rgb_qs: does the sink declare RGB selectable quantization range
+ * @yuv_qs: does the sink declare YCC selectable quantization range
  * @edid_corrupt: indicates whether the last read EDID was corrupt
  * @debugfs_entry: debugfs directory for this connector
  * @state: current atomic state for this connector
@@ -735,6 +734,24 @@ struct drm_connector {
 	int null_edid_counter; /* needed to workaround some HW bugs where we get all 0s */
 	unsigned bad_edid_counter;
 
+	/* EDID bits HDMI 2.0 */
+	int max_tmds_char;	/* in Mcsc */
+	bool scdc_present;
+	bool rr_capable;
+	bool supports_scramble;
+	int flags_3d;
+	u8 pt_scan_info;
+	u8 it_scan_info;
+	u8 ce_scan_info;
+	u8 color_enc_fmt;
+	u32 hdr_eotf;
+	bool hdr_metadata_type_one;
+	u32 hdr_max_luminance;
+	u32 hdr_avg_luminance;
+	u32 hdr_min_luminance;
+	bool hdr_supported;
+	bool rgb_qs;
+	bool yuv_qs;
 	/* Flag for raw EDID header corruption - used in Displayport
 	 * compliance testing - * Displayport Link CTS Core 1.2 rev1.1 4.2.2.6
 	 */
@@ -1056,15 +1073,6 @@ struct drm_mode_config_funcs {
  * @property_blob_list: list of all the blob property objects
  * @blob_lock: mutex for blob property allocation and management
  * @*_property: core property tracking
- * @degamma_lut_property: LUT used to convert the framebuffer's colors to linear
- *	gamma
- * @degamma_lut_size_property: size of the degamma LUT as supported by the
- *	driver (read-only)
- * @ctm_property: Matrix used to convert colors after the lookup in the
- *	degamma LUT
- * @gamma_lut_property: LUT used to convert the colors, after the CSC matrix, to
- *	the gamma space of the connected screen (read-only)
- * @gamma_lut_size_property: size of the gamma LUT as supported by the driver
  * @preferred_depth: preferred RBG pixel depth, used by fb helpers
  * @prefer_shadow: hint to userspace to prefer shadow-fb rendering
  * @async_page_flip: does this device support async flips on the primary plane?
@@ -1166,13 +1174,6 @@ struct drm_mode_config {
 	struct drm_property *aspect_ratio_property;
 	struct drm_property *dirty_info_property;
 
-	/* Optional color correction properties */
-	struct drm_property *degamma_lut_property;
-	struct drm_property *degamma_lut_size_property;
-	struct drm_property *ctm_property;
-	struct drm_property *gamma_lut_property;
-	struct drm_property *gamma_lut_size_property;
-
 	/* properties for virtual machine layout */
 	struct drm_property *suggested_x_property;
 	struct drm_property *suggested_y_property;
@@ -1200,19 +1201,8 @@ struct drm_mode_config {
  */
 #define drm_for_each_plane_mask(plane, dev, plane_mask) \
 	list_for_each_entry((plane), &(dev)->mode_config.plane_list, head) \
-		for_each_if ((plane_mask) & (1 << drm_plane_index(plane)))
+		if ((plane_mask) & (1 << drm_plane_index(plane)))
 
-/**
- * drm_for_each_encoder_mask - iterate over encoders specified by bitmask
- * @encoder: the loop cursor
- * @dev: the DRM device
- * @encoder_mask: bitmask of encoder indices
- *
- * Iterate over all encoders specified by bitmask.
- */
-#define drm_for_each_encoder_mask(encoder, dev, encoder_mask) \
-	list_for_each_entry((encoder), &(dev)->mode_config.encoder_list, head) \
-		for_each_if ((encoder_mask) & (1 << drm_encoder_index(encoder)))
 
 #define obj_to_crtc(x) container_of(x, struct drm_crtc, base)
 #define obj_to_connector(x) container_of(x, struct drm_connector, base)
@@ -1282,7 +1272,6 @@ extern int drm_encoder_init(struct drm_device *dev,
 			    struct drm_encoder *encoder,
 			    const struct drm_encoder_funcs *funcs,
 			    int encoder_type);
-extern unsigned int drm_encoder_index(struct drm_encoder *encoder);
 
 /**
  * drm_encoder_crtc_ok - can a given crtc drive a given encoder?
@@ -1338,9 +1327,7 @@ extern void drm_property_destroy_user_blobs(struct drm_device *dev,
 extern bool drm_probe_ddc(struct i2c_adapter *adapter);
 extern struct edid *drm_get_edid(struct drm_connector *connector,
 				 struct i2c_adapter *adapter);
-extern struct edid *drm_get_edid_early(struct i2c_adapter *adapter);
 extern struct edid *drm_edid_duplicate(const struct edid *edid);
-extern bool edid_vendor(struct edid *edid, char *vendor);
 extern int drm_add_edid_modes(struct drm_connector *connector, struct edid *edid);
 extern void drm_mode_config_init(struct drm_device *dev);
 extern void drm_mode_config_reset(struct drm_device *dev);
@@ -1588,29 +1575,10 @@ static inline struct drm_property *drm_property_find(struct drm_device *dev,
 	return mo ? obj_to_property(mo) : NULL;
 }
 
-/*
- * Extract a degamma/gamma LUT value provided by user and round it to the
- * precision supported by the hardware.
- */
-static inline uint32_t drm_color_lut_extract(uint32_t user_input,
-					     uint32_t bit_precision)
-{
-	uint32_t val = user_input;
-	uint32_t max = 0xffff >> (16 - bit_precision);
-
-	/* Round only if we're not using full precision. */
-	if (bit_precision < 16) {
-		val += 1UL << (16 - bit_precision - 1);
-		val >>= 16 - bit_precision;
-	}
-
-	return clamp_val(val, 0, max);
-}
-
 /* Plane list iterator for legacy (overlay only) planes. */
 #define drm_for_each_legacy_plane(plane, dev) \
 	list_for_each_entry(plane, &(dev)->mode_config.plane_list, head) \
-		for_each_if (plane->type == DRM_PLANE_TYPE_OVERLAY)
+		if (plane->type == DRM_PLANE_TYPE_OVERLAY)
 
 #define drm_for_each_plane(plane, dev) \
 	list_for_each_entry(plane, &(dev)->mode_config.plane_list, head)

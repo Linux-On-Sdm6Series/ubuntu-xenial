@@ -66,9 +66,6 @@ config ACPI_DEBUGGER
 	  This is still under development, currently enabling this only
 	  results in the compilation of the ACPICA debugger files.
 
-config ACPI_SPCR_TABLE
-	bool
-
 config ACPI_SLEEP
 	bool
 	depends on SUSPEND || HIBERNATION
@@ -208,9 +205,6 @@ config ACPI_CPU_FREQ_PSS
 config ACPI_PROCESSOR_IDLE
 	bool
 	select CPU_IDLE
-
-config ACPI_MCFG
-	bool
 
 config ACPI_CPPC_LIB
 	bool

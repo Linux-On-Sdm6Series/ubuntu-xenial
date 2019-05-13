@@ -1,4 +1,4 @@
-/* Copyright (c) 2011-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2011-2015, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -17,6 +17,7 @@
 #include <linux/device.h>
 #include <linux/radix-tree.h>
 #include <linux/platform_device.h>
+#include <linux/regulator/consumer.h>
 #include <linux/msm-bus-board.h>
 #include <linux/msm-bus.h>
 
@@ -41,6 +42,7 @@
 #define INTERLEAVED_VAL(fab_pdata, n) \
 	((fab_pdata->il_flag) ? (n) : 1)
 #define KBTOB(a) (a * 1000ULL)
+#define MAX_REG_NAME	(50)
 
 enum msm_bus_dbg_op_type {
 	MSM_BUS_DBG_UNREGISTER = -2,
@@ -57,12 +59,16 @@ enum msm_bus_hw_sel {
 struct msm_bus_arb_ops {
 	uint32_t (*register_client)(struct msm_bus_scale_pdata *pdata);
 	int (*update_request)(uint32_t cl, unsigned int index);
+	int (*update_context)(uint32_t cl, bool active_only,
+						unsigned int ctx_idx);
 	void (*unregister_client)(uint32_t cl);
 	struct msm_bus_client_handle*
 		(*register_cl)(uint32_t mas, uint32_t slv, char *name,
 						bool active_only);
 	int (*update_bw)(struct msm_bus_client_handle *cl, u64 ab, u64 ib);
 	void (*unregister)(struct msm_bus_client_handle *cl);
+	int (*update_bw_context)(struct msm_bus_client_handle *cl, u64 act_ab,
+				u64 act_ib, u64 slp_ib, u64 slp_ab);
 };
 
 enum {
@@ -139,9 +145,13 @@ struct msm_bus_link_info {
 
 struct nodeclk {
 	struct clk *clk;
+	struct regulator *reg;
 	uint64_t rate;
 	bool dirty;
+	bool enable_only_clk;
+	bool setrate_only_clk;
 	bool enable;
+	char reg_name[MAX_REG_NAME];
 };
 
 struct msm_bus_inode_info {
@@ -270,6 +280,7 @@ struct msm_bus_client {
 	struct msm_bus_scale_pdata *pdata;
 	int *src_pnode;
 	int curr;
+	struct device **src_devs;
 };
 
 uint64_t msm_bus_div64(unsigned int width, uint64_t bw);
@@ -282,9 +293,7 @@ int msm_bus_get_num_fab(void);
 int msm_bus_hw_fab_init(struct msm_bus_fabric_registration *pdata,
 	struct msm_bus_hw_algorithm *hw_algo);
 void msm_bus_board_init(struct msm_bus_fabric_registration *pdata);
-void msm_bus_board_set_nfab(struct msm_bus_fabric_registration *pdata,
-	int nfab);
-#if defined(CONFIG_QCOM_SMD_RPM)
+#if defined(CONFIG_MSM_RPM_SMD)
 int msm_bus_rpm_hw_init(struct msm_bus_fabric_registration *pdata,
 	struct msm_bus_hw_algorithm *hw_algo);
 int msm_bus_remote_hw_commit(struct msm_bus_fabric_registration
@@ -313,7 +322,7 @@ int msm_bus_noc_hw_init(struct msm_bus_fabric_registration *pdata,
 	struct msm_bus_hw_algorithm *hw_algo);
 int msm_bus_bimc_hw_init(struct msm_bus_fabric_registration *pdata,
 	struct msm_bus_hw_algorithm *hw_algo);
-#if defined(CONFIG_DEBUG_FS) && defined(CONFIG_MSM_BUS_SCALING)
+#if defined(CONFIG_DEBUG_FS) && defined(CONFIG_QCOM_BUS_SCALING)
 void msm_bus_dbg_client_data(struct msm_bus_scale_pdata *pdata, int index,
 	uint32_t cl);
 void msm_bus_dbg_commit_data(const char *fabname, void *cdata,
@@ -333,7 +342,7 @@ static inline void msm_bus_dbg_commit_data(const char *fabname,
 	int op)
 {
 }
-static inline void void msm_bus_dbg_remove_client
+static inline void msm_bus_dbg_remove_client
 		(const struct msm_bus_client_handle *pdata)
 {
 }
@@ -352,8 +361,7 @@ msm_bus_dbg_add_client(const struct msm_bus_client_handle *pdata)
 }
 #endif
 
-#if 0
-//#ifdef CONFIG_CORESIGHT
+#ifdef CONFIG_CORESIGHT
 int msmbus_coresight_init(struct platform_device *pdev);
 void msmbus_coresight_remove(struct platform_device *pdev);
 int msmbus_coresight_init_adhoc(struct platform_device *pdev,
@@ -386,7 +394,13 @@ void msm_bus_of_get_nfab(struct platform_device *pdev,
 		struct msm_bus_fabric_registration *pdata);
 struct msm_bus_fabric_registration
 	*msm_bus_of_get_fab_data(struct platform_device *pdev);
+static inline void msm_bus_board_set_nfab(struct msm_bus_fabric_registration
+		*pdata,	int nfab)
+{
+}
 #else
+void msm_bus_board_set_nfab(struct msm_bus_fabric_registration *pdata,
+	int nfab);
 static inline void msm_bus_of_get_nfab(struct platform_device *pdev,
 		struct msm_bus_fabric_registration *pdata)
 {

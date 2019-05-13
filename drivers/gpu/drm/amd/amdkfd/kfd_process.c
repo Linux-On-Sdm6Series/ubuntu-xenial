@@ -125,8 +125,6 @@ struct kfd_process *kfd_get_process(const struct task_struct *thread)
 		return ERR_PTR(-EINVAL);
 
 	process = find_process(thread);
-	if (!process)
-		return ERR_PTR(-EINVAL);
 
 	return process;
 }
@@ -196,7 +194,7 @@ static void kfd_process_wq_release(struct work_struct *work)
 
 	kfree(p);
 
-	kfree(work);
+	kfree((void *)work);
 }
 
 static void kfd_process_destroy_delayed(struct rcu_head *rcu)

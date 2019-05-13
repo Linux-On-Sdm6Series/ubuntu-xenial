@@ -19,6 +19,17 @@ CFLAGS_REMOVE_cgroup-debug.o = $(CC_FLAGS_FTRACE)
 CFLAGS_REMOVE_irq_work.o = $(CC_FLAGS_FTRACE)
 endif
 
+# Prevents flicker of uninteresting __do_softirq()/__local_bh_disable_ip()
+# in coverage traces.
+KCOV_INSTRUMENT_softirq.o := n
+# These are called from save_stack_trace() on slub debug path,
+# and produce insane amounts of uninteresting coverage.
+KCOV_INSTRUMENT_module.o := n
+KCOV_INSTRUMENT_extable.o := n
+# Don't self-instrument.
+KCOV_INSTRUMENT_kcov.o := n
+KASAN_SANITIZE_kcov.o := n
+
 # cond_syscall is currently not LTO compatible
 CFLAGS_sys_ni.o = $(DISABLE_LTO)
 
@@ -47,7 +58,6 @@ endif
 obj-$(CONFIG_UID16) += uid16.o
 obj-$(CONFIG_MODULES) += module.o
 obj-$(CONFIG_MODULE_SIG) += module_signing.o
-obj-$(CONFIG_MODULE_SIG_UEFI) += modsign_uefi.o
 obj-$(CONFIG_KALLSYMS) += kallsyms.o
 obj-$(CONFIG_BSD_PROCESS_ACCT) += acct.o
 obj-$(CONFIG_KEXEC_CORE) += kexec_core.o
@@ -70,6 +80,7 @@ obj-$(CONFIG_AUDITSYSCALL) += auditsc.o
 obj-$(CONFIG_AUDIT_WATCH) += audit_watch.o audit_fsnotify.o
 obj-$(CONFIG_AUDIT_TREE) += audit_tree.o
 obj-$(CONFIG_GCOV_KERNEL) += gcov/
+obj-$(CONFIG_KCOV) += kcov.o
 obj-$(CONFIG_KPROBES) += kprobes.o
 obj-$(CONFIG_KGDB) += debug/
 obj-$(CONFIG_DETECT_HUNG_TASK) += hung_task.o
@@ -104,8 +115,6 @@ obj-$(CONFIG_TORTURE_TEST) += torture.o
 obj-$(CONFIG_MEMBARRIER) += membarrier.o
 
 obj-$(CONFIG_HAS_IOMEM) += memremap.o
-
-$(obj)/modsign_uefi.o: KBUILD_CFLAGS += -fshort-wchar
 
 $(obj)/configs.o: $(obj)/config_data.h
 

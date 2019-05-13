@@ -45,21 +45,7 @@ struct i915_audio_component_ops {
 	void (*put_power)(struct device *);
 	void (*codec_wake_override)(struct device *, bool enable);
 	int (*get_cdclk_freq)(struct device *);
-	int (*sync_audio_rate)(struct device *, int port, int pipe, int rate);
-	/**
-	 * @get_eld: fill the audio state and ELD bytes for the given port
-	 *
-	 * Called from audio driver to get the HDMI/DP audio state of the given
-	 * digital port, and also fetch ELD bytes to the given pointer.
-	 *
-	 * It returns the byte size of the original ELD (not the actually
-	 * copied size), zero for an invalid ELD, or a negative error code.
-	 *
-	 * Note that the returned size may be over @max_bytes.  Then it
-	 * implies that only a part of ELD has been copied to the buffer.
-	 */
-	int (*get_eld)(struct device *, int port, int pipe, bool *enabled,
-		       unsigned char *buf, int max_bytes);
+	int (*sync_audio_rate)(struct device *, int port, int rate);
 };
 
 struct i915_audio_component_audio_ops {
@@ -70,7 +56,7 @@ struct i915_audio_component_audio_ops {
 	 * @audio_ptr:		HDA driver object
 	 * @port:	Which port has changed (PORTA / PORTB / PORTC etc)
 	 */
-	void (*pin_eld_notify)(void *audio_ptr, int port, int pipe);
+	void (*pin_eld_notify)(void *audio_ptr, int port);
 };
 
 /**

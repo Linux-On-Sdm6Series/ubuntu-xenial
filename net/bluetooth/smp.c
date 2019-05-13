@@ -31,7 +31,7 @@
 #include <net/bluetooth/l2cap.h>
 #include <net/bluetooth/mgmt.h>
 
-#include "ecdh_helper.h"
+#include "ecc.h"
 #include "smp.h"
 
 #define SMP_DEV(hdev) \
@@ -178,7 +178,7 @@ static int aes_cmac(struct crypto_hash *tfm, const u8 k[16], const u8 *m,
 		return -EFBIG;
 
 	if (!tfm) {
-		BT_ERR("tfm %p", tfm);
+		BT_ERR("tfm %pK", tfm);
 		return -EINVAL;
 	}
 
@@ -381,7 +381,7 @@ static int smp_e(struct crypto_blkcipher *tfm, const u8 *k, u8 *r)
 	SMP_DBG("k %16phN r %16phN", k, r);
 
 	if (!tfm) {
-		BT_ERR("tfm %p", tfm);
+		BT_ERR("tfm %pK", tfm);
 		return -EINVAL;
 	}
 
@@ -572,7 +572,7 @@ int smp_generate_oob(struct hci_dev *hdev, u8 hash[16], u8 rand[16])
 	} else {
 		while (true) {
 			/* Generate local key pair for Secure Connections */
-			if (!generate_ecdh_keys(smp->local_pk, smp->local_sk))
+			if (!ecc_make_key(smp->local_pk, smp->local_sk))
 				return -EIO;
 
 			/* This is unlikely, but we need to check that
@@ -953,7 +953,7 @@ static u8 smp_confirm(struct smp_chan *smp)
 	struct smp_cmd_pairing_confirm cp;
 	int ret;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	ret = smp_c1(smp->tfm_aes, smp->tk, smp->prnd, smp->preq, smp->prsp,
 		     conn->hcon->init_addr_type, &conn->hcon->init_addr,
@@ -984,7 +984,7 @@ static u8 smp_random(struct smp_chan *smp)
 	if (IS_ERR_OR_NULL(smp->tfm_aes))
 		return SMP_UNSPECIFIED;
 
-	BT_DBG("conn %p %s", conn, conn->hcon->out ? "master" : "slave");
+	BT_DBG("conn %pK %s", conn, conn->hcon->out ? "master" : "slave");
 
 	ret = smp_c1(smp->tfm_aes, smp->tk, smp->rrnd, smp->preq, smp->prsp,
 		     hcon->init_addr_type, &hcon->init_addr,
@@ -1223,7 +1223,7 @@ static void smp_distribute_keys(struct smp_chan *smp)
 	struct hci_dev *hdev = hcon->hdev;
 	__u8 *keydist;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	rsp = (void *) &smp->prsp[1];
 
@@ -1353,7 +1353,7 @@ static void smp_timeout(struct work_struct *work)
 					    security_timer.work);
 	struct l2cap_conn *conn = smp->conn;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	hci_disconnect(conn->hcon, HCI_ERROR_REMOTE_USER_TERM);
 }
@@ -1715,7 +1715,7 @@ static u8 smp_cmd_pairing_req(struct l2cap_conn *conn, struct sk_buff *skb)
 	u8 key_size, auth, sec_level;
 	int ret;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*req))
 		return SMP_INVALID_PARAMS;
@@ -1870,7 +1870,7 @@ static u8 sc_send_public_key(struct smp_chan *smp)
 	} else {
 		while (true) {
 			/* Generate local key pair for Secure Connections */
-			if (!generate_ecdh_keys(smp->local_pk, smp->local_sk))
+			if (!ecc_make_key(smp->local_pk, smp->local_sk))
 				return SMP_UNSPECIFIED;
 
 			/* This is unlikely, but we need to check that
@@ -1900,7 +1900,7 @@ static u8 smp_cmd_pairing_rsp(struct l2cap_conn *conn, struct sk_buff *skb)
 	u8 key_size, auth;
 	int ret;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*rsp))
 		return SMP_INVALID_PARAMS;
@@ -2052,7 +2052,7 @@ static u8 smp_cmd_pairing_confirm(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct l2cap_chan *chan = conn->smp;
 	struct smp_chan *smp = chan->data;
 
-	BT_DBG("conn %p %s", conn, conn->hcon->out ? "master" : "slave");
+	BT_DBG("conn %pK %s", conn, conn->hcon->out ? "master" : "slave");
 
 	if (skb->len < sizeof(smp->pcnf))
 		return SMP_INVALID_PARAMS;
@@ -2098,7 +2098,7 @@ static u8 smp_cmd_pairing_random(struct l2cap_conn *conn, struct sk_buff *skb)
 	u32 passkey;
 	int err;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(smp->rrnd))
 		return SMP_INVALID_PARAMS;
@@ -2233,7 +2233,7 @@ static u8 smp_cmd_security_req(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct smp_chan *smp;
 	u8 sec_level, auth;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*rp))
 		return SMP_INVALID_PARAMS;
@@ -2296,7 +2296,7 @@ int smp_conn_security(struct hci_conn *hcon, __u8 sec_level)
 	__u8 authreq;
 	int ret;
 
-	BT_DBG("conn %p hcon %p level 0x%2.2x", conn, hcon, sec_level);
+	BT_DBG("conn %pK hcon %pK level 0x%2.2x", conn, hcon, sec_level);
 
 	/* This may be NULL if there's an unexpected disconnection */
 	if (!conn)
@@ -2371,51 +2371,30 @@ unlock:
 	return ret;
 }
 
-int smp_cancel_and_remove_pairing(struct hci_dev *hdev, bdaddr_t *bdaddr,
-				  u8 addr_type)
+void smp_cancel_pairing(struct hci_conn *hcon)
 {
-	struct hci_conn *hcon;
-	struct l2cap_conn *conn;
+	struct l2cap_conn *conn = hcon->l2cap_data;
 	struct l2cap_chan *chan;
 	struct smp_chan *smp;
-	int err;
 
-	err = hci_remove_ltk(hdev, bdaddr, addr_type);
-	hci_remove_irk(hdev, bdaddr, addr_type);
-
-	hcon = hci_conn_hash_lookup_le(hdev, bdaddr, addr_type);
-	if (!hcon)
-		goto done;
-
-	conn = hcon->l2cap_data;
 	if (!conn)
-		goto done;
+		return;
 
 	chan = conn->smp;
 	if (!chan)
-		goto done;
+		return;
 
 	l2cap_chan_lock(chan);
 
 	smp = chan->data;
 	if (smp) {
-		/* Set keys to NULL to make sure smp_failure() does not try to
-		 * remove and free already invalidated rcu list entries. */
-		smp->ltk = NULL;
-		smp->slave_ltk = NULL;
-		smp->remote_irk = NULL;
-
 		if (test_bit(SMP_FLAG_COMPLETE, &smp->flags))
 			smp_failure(conn, 0);
 		else
 			smp_failure(conn, SMP_UNSPECIFIED);
-		err = 0;
 	}
 
 	l2cap_chan_unlock(chan);
-
-done:
-	return err;
 }
 
 static int smp_cmd_encrypt_info(struct l2cap_conn *conn, struct sk_buff *skb)
@@ -2424,7 +2403,7 @@ static int smp_cmd_encrypt_info(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct l2cap_chan *chan = conn->smp;
 	struct smp_chan *smp = chan->data;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*rp))
 		return SMP_INVALID_PARAMS;
@@ -2448,7 +2427,7 @@ static int smp_cmd_master_ident(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct smp_ltk *ltk;
 	u8 authenticated;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*rp))
 		return SMP_INVALID_PARAMS;
@@ -2532,19 +2511,6 @@ static int smp_cmd_ident_addr_info(struct l2cap_conn *conn,
 		goto distribute;
 	}
 
-	/* Drop IRK if peer is using identity address during pairing but is
-	 * providing different address as identity information.
-	 *
-	 * Microsoft Surface Precision Mouse is known to have this bug.
-	 */
-	if (hci_is_identity_address(&hcon->dst, hcon->dst_type) &&
-	    (bacmp(&info->bdaddr, &hcon->dst) ||
-	     info->addr_type != hcon->dst_type)) {
-		bt_dev_err(hcon->hdev,
-			   "ignoring IRK with invalid identity address");
-		goto distribute;
-	}
-
 	bacpy(&smp->id_addr, &info->bdaddr);
 	smp->id_addr_type = info->addr_type;
 
@@ -2570,7 +2536,7 @@ static int smp_cmd_sign_info(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct smp_chan *smp = chan->data;
 	struct smp_csrk *csrk;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*rp))
 		return SMP_INVALID_PARAMS;
@@ -2649,7 +2615,7 @@ static int smp_cmd_public_key(struct l2cap_conn *conn, struct sk_buff *skb)
 	struct smp_cmd_pairing_confirm cfm;
 	int err;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*key))
 		return SMP_INVALID_PARAMS;
@@ -2678,7 +2644,7 @@ static int smp_cmd_public_key(struct l2cap_conn *conn, struct sk_buff *skb)
 	SMP_DBG("Remote Public Key X: %32phN", smp->remote_pk);
 	SMP_DBG("Remote Public Key Y: %32phN", smp->remote_pk + 32);
 
-	if (!compute_ecdh_secret(smp->remote_pk, smp->local_sk, smp->dhkey))
+	if (!ecdh_shared_secret(smp->remote_pk, smp->local_sk, smp->dhkey))
 		return SMP_UNSPECIFIED;
 
 	SMP_DBG("DHKey %32phN", smp->dhkey);
@@ -2762,7 +2728,7 @@ static int smp_cmd_dhkey_check(struct l2cap_conn *conn, struct sk_buff *skb)
 	u8 io_cap[3], r[16], e[16];
 	int err;
 
-	BT_DBG("conn %p", conn);
+	BT_DBG("conn %pK", conn);
 
 	if (skb->len < sizeof(*check))
 		return SMP_INVALID_PARAMS;
@@ -2944,7 +2910,7 @@ static void smp_teardown_cb(struct l2cap_chan *chan, int err)
 {
 	struct l2cap_conn *conn = chan->conn;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	if (chan->data)
 		smp_chan_destroy(conn);
@@ -2961,7 +2927,7 @@ static void bredr_pairing(struct l2cap_chan *chan)
 	struct smp_cmd_pairing req;
 	struct smp_chan *smp;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	/* Only new pairings are interesting */
 	if (!test_bit(HCI_CONN_NEW_LINK_KEY, &hcon->flags))
@@ -3027,7 +2993,7 @@ static void smp_resume_cb(struct l2cap_chan *chan)
 	struct l2cap_conn *conn = chan->conn;
 	struct hci_conn *hcon = conn->hcon;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	if (hcon->type == ACL_LINK) {
 		bredr_pairing(chan);
@@ -3050,7 +3016,7 @@ static void smp_ready_cb(struct l2cap_chan *chan)
 	struct l2cap_conn *conn = chan->conn;
 	struct hci_conn *hcon = conn->hcon;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	/* No need to call l2cap_chan_hold() here since we already own
 	 * the reference taken in smp_new_conn_cb(). This is just the
@@ -3068,7 +3034,7 @@ static int smp_recv_cb(struct l2cap_chan *chan, struct sk_buff *skb)
 {
 	int err;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	err = smp_sig_channel(chan, skb);
 	if (err) {
@@ -3120,7 +3086,7 @@ static inline struct l2cap_chan *smp_new_conn_cb(struct l2cap_chan *pchan)
 {
 	struct l2cap_chan *chan;
 
-	BT_DBG("pchan %p", pchan);
+	BT_DBG("pchan %pK", pchan);
 
 	chan = l2cap_chan_create();
 	if (!chan)
@@ -3141,7 +3107,7 @@ static inline struct l2cap_chan *smp_new_conn_cb(struct l2cap_chan *pchan)
 	 */
 	atomic_set(&chan->nesting, L2CAP_NESTING_SMP);
 
-	BT_DBG("created chan %p", chan);
+	BT_DBG("created chan %pK", chan);
 
 	return chan;
 }
@@ -3246,7 +3212,7 @@ static void smp_del_chan(struct l2cap_chan *chan)
 {
 	struct smp_dev *smp;
 
-	BT_DBG("chan %p", chan);
+	BT_DBG("chan %pK", chan);
 
 	smp = chan->data;
 	if (smp) {

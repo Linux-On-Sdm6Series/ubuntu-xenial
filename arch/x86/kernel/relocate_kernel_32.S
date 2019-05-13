@@ -10,7 +10,6 @@
 #include <asm/page_types.h>
 #include <asm/kexec.h>
 #include <asm/processor-flags.h>
-#include <asm/nospec-branch.h>
 
 /*
  * Must be relocatable PIC code callable as a C function
@@ -168,7 +167,6 @@ identity_mapped:
 	movl	CP_PA_SWAP_PAGE(%edi), %esp
 	addl	$PAGE_SIZE, %esp
 2:
-	ANNOTATE_RETPOLINE_SAFE
 	call	*%edx
 
 	/* get the re-entry point of the peer system */

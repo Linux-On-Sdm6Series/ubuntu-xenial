@@ -363,10 +363,8 @@ ssize_t vfs_iter_write(struct file *file, struct iov_iter *iter, loff_t *ppos)
 	iter->type |= WRITE;
 	ret = file->f_op->write_iter(&kiocb, iter);
 	BUG_ON(ret == -EIOCBQUEUED);
-	if (ret > 0) {
+	if (ret > 0)
 		*ppos = kiocb.ki_pos;
-		fsnotify_modify(file);
-	}
 	return ret;
 }
 EXPORT_SYMBOL(vfs_iter_write);
@@ -496,30 +494,6 @@ ssize_t __vfs_write(struct file *file, const char __user *p, size_t count,
 }
 EXPORT_SYMBOL(__vfs_write);
 
-vfs_readf_t vfs_readf(struct file *file)
-{
-	const struct file_operations *fop = file->f_op;
-
-	if (fop->read)
-		return fop->read;
-	if (fop->read_iter)
-		return new_sync_read;
-	return ERR_PTR(-ENOSYS);
-}
-EXPORT_SYMBOL(vfs_readf);
-
-vfs_writef_t vfs_writef(struct file *file)
-{
-	const struct file_operations *fop = file->f_op;
-
-	if (fop->write)
-		return fop->write;
-	if (fop->write_iter)
-		return new_sync_write;
-	return ERR_PTR(-ENOSYS);
-}
-EXPORT_SYMBOL(vfs_writef);
-
 ssize_t __kernel_write(struct file *file, const char *buf, size_t count, loff_t *pos)
 {
 	mm_segment_t old_fs;
@@ -577,13 +551,12 @@ EXPORT_SYMBOL(vfs_write);
 
 static inline loff_t file_pos_read(struct file *file)
 {
-	return file->f_mode & FMODE_STREAM ? 0 : file->f_pos;
+	return file->f_pos;
 }
 
 static inline void file_pos_write(struct file *file, loff_t pos)
 {
-	if ((file->f_mode & FMODE_STREAM) == 0)
-		file->f_pos = pos;
+	file->f_pos = pos;
 }
 
 SYSCALL_DEFINE3(read, unsigned int, fd, char __user *, buf, size_t, count)

@@ -7,8 +7,6 @@
 #ifndef __ASM_BARRIER_H
 #define __ASM_BARRIER_H
 
-#include <asm/alternative.h>
-
 /*
  * Force strict CPU ordering.
  * And yes, this is required on UP too when we're talking
@@ -24,13 +22,6 @@
 
 #define mb() do {  asm volatile(__ASM_BARRIER : : : "memory"); } while (0)
 
-/* Prevent speculative execution past this barrier. */
-#define barrier_nospec()						\
-	do {								\
-		asm volatile(ALTERNATIVE("", ".long 0xb2e8f000", 81)	\
-			     : : : "memory");				\
-	} while (0)
-
 #define rmb()				barrier()
 #define wmb()				barrier()
 #define dma_rmb()			mb()
@@ -45,7 +36,7 @@
 #define smp_mb__before_atomic()		smp_mb()
 #define smp_mb__after_atomic()		smp_mb()
 
-#define smp_store_mb(var, value)	do { WRITE_ONCE(var, value); smp_mb(); } while (0)
+#define smp_store_mb(var, value)		do { WRITE_ONCE(var, value); mb(); } while (0)
 
 #define smp_store_release(p, v)						\
 do {									\

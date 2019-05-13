@@ -15,7 +15,6 @@
 #include <linux/pci-aspm.h>
 #include <linux/aer.h>
 #include <linux/acpi.h>
-#include <linux/irqdomain.h>
 #include <asm-generic/pci-bridge.h>
 #include "pci.h"
 
@@ -677,22 +676,6 @@ static struct irq_domain *pci_host_bridge_msi_domain(struct pci_bus *bus)
 	 * should be called from here.
 	 */
 	d = pci_host_bridge_of_msi_domain(bus);
-	if (!d)
-		d = pci_host_bridge_acpi_msi_domain(bus);
-
-#ifdef CONFIG_PCI_MSI_IRQ_DOMAIN
-	/*
-	 * If no IRQ domain was found via the OF tree, try looking it up
-	 * directly through the fwnode_handle.
-	 */
-	if (!d) {
-		struct fwnode_handle *fwnode = pci_root_bus_fwnode(bus);
-
-		if (fwnode)
-			d = irq_find_matching_fwnode(fwnode,
-						     DOMAIN_BUS_PCI_MSI);
-	}
-#endif
 
 	return d;
 }
@@ -1762,8 +1745,7 @@ static void pci_dma_configure(struct pci_dev *dev)
 
 	if (IS_ENABLED(CONFIG_OF) &&
 		bridge->parent && bridge->parent->of_node) {
-			of_dma_configure_masks(&dev->dev, bridge->parent->of_node);
-			of_dma_configure_ops(&dev->dev, bridge->parent->of_node);
+			of_dma_configure(&dev->dev, bridge->parent->of_node);
 	} else if (has_acpi_companion(bridge)) {
 		struct acpi_device *adev = to_acpi_device_node(bridge->fwnode);
 		enum dev_dma_attr attr = acpi_get_dma_attr(adev);
@@ -2166,9 +2148,7 @@ struct pci_bus *pci_create_root_bus(struct device *parent, int bus,
 	b->sysdata = sysdata;
 	b->ops = ops;
 	b->number = b->busn_res.start = bus;
-#ifdef CONFIG_PCI_DOMAINS_GENERIC
-	b->domain_nr = pci_bus_find_domain_nr(b, parent);
-#endif
+	pci_bus_assign_domain_nr(b, parent);
 	b2 = pci_find_bus(pci_domain_nr(b), bus);
 	if (b2) {
 		/* If we already got to this bus through a different bridge, ignore it */

@@ -279,7 +279,7 @@ static inline pgprot_t static_protections(pgprot_t prot, unsigned long address,
 		   __pa_symbol(__end_rodata) >> PAGE_SHIFT))
 		pgprot_val(forbidden) |= _PAGE_RW;
 
-#if defined(CONFIG_X86_64) && defined(CONFIG_DEBUG_RODATA)
+#if defined(CONFIG_X86_64)
 	/*
 	 * Once the kernel maps the text as RO (kernel_set_to_readonly is set),
 	 * kernel text mappings for the large page aligned text, rodata sections
@@ -942,19 +942,24 @@ static void populate_pte(struct cpa_data *cpa,
 	pte = pte_offset_kernel(pmd, start);
 
 	while (num_pages-- && start < end) {
-		set_pte(pte, pfn_pte(cpa->pfn, pgprot));
+
+		/* deal with the NX bit */
+		if (!(pgprot_val(pgprot) & _PAGE_NX))
+			cpa->pfn &= ~_PAGE_NX;
+
+		set_pte(pte, pfn_pte(cpa->pfn >> PAGE_SHIFT, pgprot));
 
 		start	 += PAGE_SIZE;
-		cpa->pfn++;
+		cpa->pfn += PAGE_SIZE;
 		pte++;
 	}
 }
 
-static long populate_pmd(struct cpa_data *cpa,
-			 unsigned long start, unsigned long end,
-			 unsigned num_pages, pud_t *pud, pgprot_t pgprot)
+static int populate_pmd(struct cpa_data *cpa,
+			unsigned long start, unsigned long end,
+			unsigned num_pages, pud_t *pud, pgprot_t pgprot)
 {
-	long cur_pages = 0;
+	unsigned int cur_pages = 0;
 	pmd_t *pmd;
 	pgprot_t pmd_pgprot;
 
@@ -1001,11 +1006,11 @@ static long populate_pmd(struct cpa_data *cpa,
 
 		pmd = pmd_offset(pud, start);
 
-		set_pmd(pmd, pmd_mkhuge(pfn_pmd(cpa->pfn,
-				        canon_pgprot(pmd_pgprot))));
+		set_pmd(pmd, pmd_mkhuge(pfn_pmd(cpa->pfn >> PAGE_SHIFT,
+					canon_pgprot(pmd_pgprot))));
 
 		start	  += PMD_SIZE;
-		cpa->pfn  += PMD_SIZE >> PAGE_SHIFT;
+		cpa->pfn  += PMD_SIZE;
 		cur_pages += PMD_SIZE >> PAGE_SHIFT;
 	}
 
@@ -1024,12 +1029,12 @@ static long populate_pmd(struct cpa_data *cpa,
 	return num_pages;
 }
 
-static long populate_pud(struct cpa_data *cpa, unsigned long start, pgd_t *pgd,
-			 pgprot_t pgprot)
+static int populate_pud(struct cpa_data *cpa, unsigned long start, pgd_t *pgd,
+			pgprot_t pgprot)
 {
 	pud_t *pud;
 	unsigned long end;
-	long cur_pages = 0;
+	int cur_pages = 0;
 	pgprot_t pud_pgprot;
 
 	end = start + (cpa->numpages << PAGE_SHIFT);
@@ -1075,17 +1080,17 @@ static long populate_pud(struct cpa_data *cpa, unsigned long start, pgd_t *pgd,
 	 */
 	while (end - start >= PUD_SIZE) {
 		set_pud(pud, pud_mkhuge(pfn_pud(cpa->pfn,
-					canon_pgprot(pud_pgprot))));
+				   canon_pgprot(pud_pgprot))));
 
 		start	  += PUD_SIZE;
-		cpa->pfn  += PUD_SIZE >> PAGE_SHIFT;
+		cpa->pfn  += PUD_SIZE;
 		cur_pages += PUD_SIZE >> PAGE_SHIFT;
 		pud++;
 	}
 
 	/* Map trailing leftover */
 	if (start < end) {
-		long tmp;
+		int tmp;
 
 		pud = pud_offset(pgd, start);
 		if (pud_none(*pud))
@@ -1111,7 +1116,7 @@ static int populate_pgd(struct cpa_data *cpa, unsigned long addr)
 	pgprot_t pgprot = __pgprot(_KERNPG_TABLE);
 	pud_t *pud = NULL;	/* shut up gcc */
 	pgd_t *pgd_entry;
-	long ret;
+	int ret;
 
 	pgd_entry = cpa->pgd + pgd_index(addr);
 
@@ -1346,8 +1351,7 @@ static int cpa_process_alias(struct cpa_data *cpa)
 
 static int __change_page_attr_set_clr(struct cpa_data *cpa, int checkalias)
 {
-	unsigned long numpages = cpa->numpages;
-	int ret;
+	int ret, numpages = cpa->numpages;
 
 	while (numpages) {
 		/*

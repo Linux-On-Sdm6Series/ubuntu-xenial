@@ -23,7 +23,6 @@
 #include <linux/udp.h>
 #include <linux/igmp.h>
 #include <linux/etherdevice.h>
-#include <linux/inetdevice.h>
 #include <linux/if_ether.h>
 #include <linux/if_vlan.h>
 #include <linux/hash.h>
@@ -107,167 +106,6 @@ static inline bool vxlan_collect_metadata(struct vxlan_sock *vs)
 {
 	return vs->flags & VXLAN_F_COLLECT_METADATA ||
 	       ip_tunnel_collect_metadata();
-}
-
-static struct ip_fan_map *vxlan_fan_find_map(struct vxlan_dev *vxlan, __be32 daddr)
-{
-	struct ip_fan_map *fan_map;
-
-	rcu_read_lock();
-	list_for_each_entry_rcu(fan_map, &vxlan->fan.fan_maps, list) {
-		if (fan_map->overlay ==
-		    (daddr & inet_make_mask(fan_map->overlay_prefix))) {
-			rcu_read_unlock();
-			return fan_map;
-		}
-	}
-	rcu_read_unlock();
-
-	return NULL;
-}
-
-static void vxlan_fan_flush_map(struct vxlan_dev *vxlan)
-{
-	struct ip_fan_map *fan_map;
-
-	list_for_each_entry_rcu(fan_map, &vxlan->fan.fan_maps, list) {
-		list_del_rcu(&fan_map->list);
-		kfree_rcu(fan_map, rcu);
-	}
-}
-
-static int vxlan_fan_del_map(struct vxlan_dev *vxlan, __be32 overlay)
-{
-	struct ip_fan_map *fan_map;
-
-	fan_map = vxlan_fan_find_map(vxlan, overlay);
-	if (!fan_map)
-		return -ENOENT;
-
-	list_del_rcu(&fan_map->list);
-	kfree_rcu(fan_map, rcu);
-
-	return 0;
-}
-
-static int vxlan_fan_add_map(struct vxlan_dev *vxlan, struct ifla_fan_map *map)
-{
-	__be32 overlay_mask, underlay_mask;
-	struct ip_fan_map *fan_map;
-
-	overlay_mask = inet_make_mask(map->overlay_prefix);
-	underlay_mask = inet_make_mask(map->underlay_prefix);
-
-	netdev_dbg(vxlan->dev, "vfam: map: o %x/%d u %x/%d om %x um %x\n",
-		   map->overlay, map->overlay_prefix,
-		   map->underlay, map->underlay_prefix,
-		   overlay_mask, underlay_mask);
-
-	if ((map->overlay & ~overlay_mask) || (map->underlay & ~underlay_mask))
-		return -EINVAL;
-
-	if (!(map->overlay & overlay_mask) && (map->underlay & underlay_mask))
-		return -EINVAL;
-
-	/* Special case: overlay 0 and underlay 0: flush all mappings */
-	if (!map->overlay && !map->underlay) {
-		vxlan_fan_flush_map(vxlan);
-		return 0;
-	}
-	
-	/* Special case: overlay set and underlay 0: clear map for overlay */
-	if (!map->underlay)
-		return vxlan_fan_del_map(vxlan, map->overlay);
-
-	if (vxlan_fan_find_map(vxlan, map->overlay))
-		return -EEXIST;
-
-	fan_map = kmalloc(sizeof(*fan_map), GFP_KERNEL);
-	fan_map->underlay = map->underlay;
-	fan_map->overlay = map->overlay;
-	fan_map->underlay_prefix = map->underlay_prefix;
-	fan_map->overlay_mask = ntohl(overlay_mask);
-	fan_map->overlay_prefix = map->overlay_prefix;
-
-	list_add_tail_rcu(&fan_map->list, &vxlan->fan.fan_maps);
-
-	return 0;
-}
-	
-static int vxlan_parse_fan_map(struct nlattr *data[], struct vxlan_dev *vxlan)
-{
-	struct ifla_fan_map *map;
-	struct nlattr *attr;
-	int rem, rv;
-
-	nla_for_each_nested(attr, data[IFLA_IPTUN_FAN_MAP], rem) {
-		map = nla_data(attr);
-		rv = vxlan_fan_add_map(vxlan, map);
-		if (rv)
-			return rv;
-	}
-
-	return 0;
-}
-
-static int vxlan_fan_build_rdst(struct vxlan_dev *vxlan, struct sk_buff *skb,
-				      struct vxlan_rdst *fan_rdst)
-{
-	struct ip_fan_map *f_map;
-	union vxlan_addr *va;
-	u32 daddr, underlay;
-	struct arphdr *arp;
-	void *arp_ptr;
-	struct ethhdr *eth;
-	struct iphdr *iph;
-
-	eth = eth_hdr(skb);
-	switch (eth->h_proto) {
-	case htons(ETH_P_IP):
-		iph = ip_hdr(skb);
-		if (!iph)
-			return -EINVAL;
-		daddr = iph->daddr;
-		break;
-	case htons(ETH_P_ARP):
-		arp = arp_hdr(skb);
-		if (!arp)
-			return -EINVAL;
-		arp_ptr = arp + 1;
-		netdev_dbg(vxlan->dev,
-			   "vfbr: arp sha %pM sip %pI4 tha %pM tip %pI4\n",
-			   arp_ptr, arp_ptr + skb->dev->addr_len,
-			   arp_ptr + skb->dev->addr_len + 4,
-			   arp_ptr + (skb->dev->addr_len * 2) + 4);
-		arp_ptr += (skb->dev->addr_len * 2) + 4;
-		memcpy(&daddr, arp_ptr, 4);
-		break;
-	default:
-		netdev_dbg(vxlan->dev, "vfbr: unknown eth p %x\n", eth->h_proto);
-		return -EINVAL;
-	}
-
-	f_map = vxlan_fan_find_map(vxlan, daddr);
-	if (!f_map)
-		return -EINVAL;
-
-	daddr = ntohl(daddr);
-	underlay = ntohl(f_map->underlay);
-	if (!underlay)
-		return -EINVAL;
-
-	memset(fan_rdst, 0, sizeof(*fan_rdst));
-	va = &fan_rdst->remote_ip;
-	va->sa.sa_family = AF_INET;
-	fan_rdst->remote_vni = vxlan->default_dst.remote_vni;
-	va->sin.sin_addr.s_addr = htonl(underlay |
-					((daddr & ~f_map->overlay_mask) >>
-					 (32 - f_map->overlay_prefix -
-					  (32 - f_map->underlay_prefix))));
-	netdev_dbg(vxlan->dev, "vfbr: daddr %x ul %x dst %x\n",
-		   daddr, underlay, va->sin.sin_addr.s_addr);
-
-	return 0;
 }
 
 #if IS_ENABLED(CONFIG_IPV6)
@@ -1391,14 +1229,6 @@ static void vxlan_rcv(struct vxlan_sock *vs, struct sk_buff *skb,
 		}
 	}
 
-	rcu_read_lock();
-
-	if (unlikely(!(vxlan->dev->flags & IFF_UP))) {
-		rcu_read_unlock();
-		atomic_long_inc(&vxlan->dev->rx_dropped);
-		goto drop;
-	}
-
 	stats = this_cpu_ptr(vxlan->dev->tstats);
 	u64_stats_update_begin(&stats->syncp);
 	stats->rx_packets++;
@@ -1406,8 +1236,6 @@ static void vxlan_rcv(struct vxlan_sock *vs, struct sk_buff *skb,
 	u64_stats_update_end(&stats->syncp);
 
 	gro_cells_receive(&vxlan->gro_cells, skb);
-
-	rcu_read_unlock();
 
 	return;
 drop:
@@ -2053,7 +1881,7 @@ static void vxlan_encap_bypass(struct sk_buff *skb, struct vxlan_dev *src_vxlan,
 	struct pcpu_sw_netstats *tx_stats, *rx_stats;
 	union vxlan_addr loopback;
 	union vxlan_addr *remote_ip = &dst_vxlan->default_dst.remote_ip;
-	struct net_device *dev;
+	struct net_device *dev = skb->dev;
 	int len = skb->len;
 
 	tx_stats = this_cpu_ptr(src_vxlan->dev->tstats);
@@ -2073,15 +1901,8 @@ static void vxlan_encap_bypass(struct sk_buff *skb, struct vxlan_dev *src_vxlan,
 #endif
 	}
 
-	rcu_read_lock();
-	dev = skb->dev;
-	if (unlikely(!(dev->flags & IFF_UP))) {
-		kfree_skb(skb);
-		goto drop;
-	}
-
 	if (dst_vxlan->flags & VXLAN_F_LEARN)
-		vxlan_snoop(dev, &loopback, eth_hdr(skb)->h_source);
+		vxlan_snoop(skb->dev, &loopback, eth_hdr(skb)->h_source);
 
 	u64_stats_update_begin(&tx_stats->syncp);
 	tx_stats->tx_packets++;
@@ -2094,10 +1915,8 @@ static void vxlan_encap_bypass(struct sk_buff *skb, struct vxlan_dev *src_vxlan,
 		rx_stats->rx_bytes += len;
 		u64_stats_update_end(&rx_stats->syncp);
 	} else {
-drop:
 		dev->stats.rx_dropped++;
 	}
-	rcu_read_unlock();
 }
 
 static void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
@@ -2168,11 +1987,8 @@ static void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
 		ttl = info->key.ttl;
 		tos = info->key.tos;
 
-		if (info->options_len) {
-			if (info->options_len < sizeof(*md))
-				goto drop;
+		if (info->options_len)
 			md = ip_tunnel_info_opts(info);
-		}
 	} else {
 		md->gbp = skb->mark;
 	}
@@ -2215,13 +2031,6 @@ static void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
 			goto rt_tx_error;
 		}
 
-		if (fan_has_map(&vxlan->fan) && rt->rt_flags & RTCF_LOCAL) {
-			netdev_dbg(dev, "discard fan to localhost %pI4\n",
-				   &dst->sin.sin_addr.s_addr);
-			ip_rt_put(rt);
-			goto tx_free;
-		}
-
 		/* Bypass encapsulation if the destination is local */
 		if (rt->rt_flags & RTCF_LOCAL &&
 		    !(rt->rt_flags & (RTCF_BROADCAST | RTCF_MULTICAST))) {
@@ -2237,7 +2046,7 @@ static void vxlan_xmit_one(struct sk_buff *skb, struct net_device *dev,
 			return;
 		}
 
-		tos = ip_tunnel_ecn_encap(RT_TOS(tos), old_iph, skb);
+		tos = ip_tunnel_ecn_encap(tos, old_iph, skb);
 		ttl = ttl ? : ip4_dst_hoplimit(&rt->dst);
 		err = vxlan_xmit_skb(rt, sk, skb, fl4.saddr,
 				     dst->sin.sin_addr.s_addr, tos, ttl, df,
@@ -2369,20 +2178,6 @@ static netdev_tx_t vxlan_xmit(struct sk_buff *skb, struct net_device *dev)
 		return NETDEV_TX_OK;
 	}
 
-	if (fan_has_map(&vxlan->fan)) {
-		struct vxlan_rdst fan_rdst;
-
-		netdev_dbg(vxlan->dev, "vxlan_xmit p %x d %pM\n",
-			   eth->h_proto, eth->h_dest);
-		if (vxlan_fan_build_rdst(vxlan, skb, &fan_rdst)) {
-			dev->stats.tx_dropped++;
-			kfree_skb(skb);
-			return NETDEV_TX_OK;
-		}
-		vxlan_xmit_one(skb, dev, &fan_rdst, 0);
-		return NETDEV_TX_OK;
-	}
-
 	f = vxlan_find_mac(vxlan, eth->h_dest);
 	did_rsc = false;
 
@@ -2486,18 +2281,9 @@ static void vxlan_vs_add_dev(struct vxlan_sock *vs, struct vxlan_dev *vxlan)
 /* Setup stats when device is created */
 static int vxlan_init(struct net_device *dev)
 {
-	struct vxlan_dev *vxlan = netdev_priv(dev);
-	int err;
-
 	dev->tstats = netdev_alloc_pcpu_stats(struct pcpu_sw_netstats);
 	if (!dev->tstats)
 		return -ENOMEM;
-
-	err = gro_cells_init(&vxlan->gro_cells, dev);
-	if (err) {
-		free_percpu(dev->tstats);
-		return err;
-	}
 
 	return 0;
 }
@@ -2516,8 +2302,6 @@ static void vxlan_fdb_delete_default(struct vxlan_dev *vxlan)
 static void vxlan_uninit(struct net_device *dev)
 {
 	struct vxlan_dev *vxlan = netdev_priv(dev);
-
-	gro_cells_destroy(&vxlan->gro_cells);
 
 	vxlan_fdb_delete_default(vxlan);
 
@@ -2776,10 +2560,10 @@ static void vxlan_setup(struct net_device *dev)
 
 	vxlan->dev = dev;
 
+	gro_cells_init(&vxlan->gro_cells, dev);
+
 	for (h = 0; h < FDB_HASH_SIZE; ++h)
 		INIT_HLIST_HEAD(&vxlan->fdb_head[h]);
-
-	INIT_LIST_HEAD(&vxlan->fan.fan_maps);
 }
 
 static const struct nla_policy vxlan_policy[IFLA_VXLAN_MAX + 1] = {
@@ -2978,21 +2762,17 @@ static int __vxlan_sock_add(struct vxlan_dev *vxlan, bool ipv6)
 
 static int vxlan_sock_add(struct vxlan_dev *vxlan)
 {
+	bool ipv6 = vxlan->flags & VXLAN_F_IPV6;
 	bool metadata = vxlan->flags & VXLAN_F_COLLECT_METADATA;
-	bool ipv6 = vxlan->flags & VXLAN_F_IPV6 || metadata;
-	bool ipv4 = !ipv6 || metadata;
 	int ret = 0;
 
 	vxlan->vn4_sock = NULL;
 #if IS_ENABLED(CONFIG_IPV6)
 	vxlan->vn6_sock = NULL;
-	if (ipv6) {
+	if (ipv6 || metadata)
 		ret = __vxlan_sock_add(vxlan, true);
-		if (ret < 0 && ret != -EAFNOSUPPORT)
-			ipv4 = false;
-	}
 #endif
-	if (ipv4)
+	if (!ret && (!ipv6 || metadata))
 		ret = __vxlan_sock_add(vxlan, false);
 	if (ret < 0)
 		vxlan_sock_release(vxlan);
@@ -3116,10 +2896,33 @@ static int vxlan_dev_configure(struct net *src_net, struct net_device *dev,
 	return 0;
 }
 
+struct net_device *vxlan_dev_create(struct net *net, const char *name,
+				    u8 name_assign_type, struct vxlan_config *conf)
+{
+	struct nlattr *tb[IFLA_MAX+1];
+	struct net_device *dev;
+	int err;
+
+	memset(&tb, 0, sizeof(tb));
+
+	dev = rtnl_create_link(net, name, name_assign_type,
+			       &vxlan_link_ops, tb);
+	if (IS_ERR(dev))
+		return dev;
+
+	err = vxlan_dev_configure(net, dev, conf);
+	if (err < 0) {
+		free_netdev(dev);
+		return ERR_PTR(err);
+	}
+
+	return dev;
+}
+EXPORT_SYMBOL_GPL(vxlan_dev_create);
+
 static int vxlan_newlink(struct net *src_net, struct net_device *dev,
 			 struct nlattr *tb[], struct nlattr *data[])
 {
-	struct vxlan_dev *vxlan = netdev_priv(dev);
 	struct vxlan_config conf;
 	int err;
 
@@ -3136,12 +2939,6 @@ static int vxlan_newlink(struct net *src_net, struct net_device *dev,
 
 		conf.remote_ip.sin6.sin6_addr = nla_get_in6_addr(data[IFLA_VXLAN_GROUP6]);
 		conf.remote_ip.sa.sa_family = AF_INET6;
-	}
-
-	if (data[IFLA_VXLAN_FAN_MAP]) {
-		err = vxlan_parse_fan_map(data, vxlan);
-		if (err)
-			return err;
 	}
 
 	if (data[IFLA_VXLAN_LOCAL]) {
@@ -3250,6 +3047,7 @@ static void vxlan_dellink(struct net_device *dev, struct list_head *head)
 {
 	struct vxlan_dev *vxlan = netdev_priv(dev);
 
+	gro_cells_destroy(&vxlan->gro_cells);
 	list_del(&vxlan->next);
 	unregister_netdevice_queue(dev, head);
 }
@@ -3278,7 +3076,6 @@ static size_t vxlan_get_size(const struct net_device *dev)
 		nla_total_size(sizeof(__u8)) + /* IFLA_VXLAN_UDP_ZERO_CSUM6_RX */
 		nla_total_size(sizeof(__u8)) + /* IFLA_VXLAN_REMCSUM_TX */
 		nla_total_size(sizeof(__u8)) + /* IFLA_VXLAN_REMCSUM_RX */
-		nla_total_size(sizeof(struct ip_fan_map) * 256) +
 		0;
 }
 
@@ -3323,26 +3120,6 @@ static int vxlan_fill_info(struct sk_buff *skb, const struct net_device *dev)
 				goto nla_put_failure;
 #endif
 		}
-	}
-
-	if (fan_has_map(&vxlan->fan)) {
-		struct nlattr *fan_nest;
-		struct ip_fan_map *fan_map;
-
-		fan_nest = nla_nest_start(skb, IFLA_VXLAN_FAN_MAP);
-		if (!fan_nest)
-			goto nla_put_failure;
-		list_for_each_entry_rcu(fan_map, &vxlan->fan.fan_maps, list) {
-			struct ifla_fan_map map;
-
-			map.underlay = fan_map->underlay;
-			map.underlay_prefix = fan_map->underlay_prefix;
-			map.overlay = fan_map->overlay;
-			map.overlay_prefix = fan_map->overlay_prefix;
-			if (nla_put(skb, IFLA_FAN_MAPPING, sizeof(map), &map))
-				goto nla_put_failure;
-		}
-		nla_nest_end(skb, fan_nest);
 	}
 
 	if (nla_put_u8(skb, IFLA_VXLAN_TTL, vxlan->cfg.ttl) ||
@@ -3411,40 +3188,6 @@ static struct rtnl_link_ops vxlan_link_ops __read_mostly = {
 	.get_link_net	= vxlan_get_link_net,
 };
 
-struct net_device *vxlan_dev_create(struct net *net, const char *name,
-				    u8 name_assign_type,
-				    struct vxlan_config *conf)
-{
-	struct nlattr *tb[IFLA_MAX + 1];
-	struct net_device *dev;
-	int err;
-
-	memset(&tb, 0, sizeof(tb));
-
-	dev = rtnl_create_link(net, name, name_assign_type,
-			       &vxlan_link_ops, tb);
-	if (IS_ERR(dev))
-		return dev;
-
-	err = vxlan_dev_configure(net, dev, conf);
-	if (err < 0) {
-		free_netdev(dev);
-		return ERR_PTR(err);
-	}
-
-	err = rtnl_configure_link(dev, NULL);
-	if (err < 0) {
-		LIST_HEAD(list_kill);
-
-		vxlan_dellink(dev, &list_kill);
-		unregister_netdevice_many(&list_kill);
-		return ERR_PTR(err);
-	}
-
-	return dev;
-}
-EXPORT_SYMBOL_GPL(vxlan_dev_create);
-
 static void vxlan_handle_lowerdev_unregister(struct vxlan_net *vn,
 					     struct net_device *dev)
 {
@@ -3497,22 +3240,6 @@ static __net_init int vxlan_init_net(struct net *net)
 	return 0;
 }
 
-#ifdef CONFIG_SYSCTL
-static struct ctl_table_header *vxlan_fan_header;
-static unsigned int vxlan_fan_version = 4;
-
-static struct ctl_table vxlan_fan_sysctls[] = {
-	{
-		.procname	= "vxlan",
-		.data		= &vxlan_fan_version,
-		.maxlen		= sizeof(vxlan_fan_version),
-		.mode		= 0444,
-		.proc_handler	= proc_dointvec,
-	},
-	{},
-};
-#endif /* CONFIG_SYSCTL */
-
 static void __net_exit vxlan_exit_net(struct net *net)
 {
 	struct vxlan_net *vn = net_generic(net, vxlan_net_id);
@@ -3529,8 +3256,10 @@ static void __net_exit vxlan_exit_net(struct net *net)
 		/* If vxlan->dev is in the same netns, it has already been added
 		 * to the list by the previous loop.
 		 */
-		if (!net_eq(dev_net(vxlan->dev), net))
+		if (!net_eq(dev_net(vxlan->dev), net)) {
+			gro_cells_destroy(&vxlan->gro_cells);
 			unregister_netdevice_queue(vxlan->dev, &list);
+		}
 	}
 
 	unregister_netdevice_many(&list);
@@ -3566,20 +3295,7 @@ static int __init vxlan_init_module(void)
 	if (rc)
 		goto out3;
 
-#ifdef CONFIG_SYSCTL
-	vxlan_fan_header = register_net_sysctl(&init_net, "net/fan",
-					      vxlan_fan_sysctls);
-	if (!vxlan_fan_header) {
-		rc = -ENOMEM;
-		goto sysctl_failed;
-	}
-#endif /* CONFIG_SYSCTL */
-
 	return 0;
-#ifdef CONFIG_SYSCTL
-sysctl_failed:
-	rtnl_link_unregister(&vxlan_link_ops);
-#endif /* CONFIG_SYSCTL */
 out3:
 	unregister_netdevice_notifier(&vxlan_notifier_block);
 out2:
@@ -3592,9 +3308,6 @@ late_initcall(vxlan_init_module);
 
 static void __exit vxlan_cleanup_module(void)
 {
-#ifdef CONFIG_SYSCTL
-	unregister_net_sysctl_table(vxlan_fan_header);
-#endif /* CONFIG_SYSCTL */
 	rtnl_link_unregister(&vxlan_link_ops);
 	unregister_netdevice_notifier(&vxlan_notifier_block);
 	destroy_workqueue(vxlan_wq);

@@ -23,6 +23,7 @@
 #include <linux/gpio.h>
 #include <linux/interrupt.h>
 #include <linux/of_device.h>
+#include <linux/of_irq.h>
 
 #include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
 
@@ -259,32 +260,22 @@ static int pm8xxx_pin_config_get(struct pinctrl_dev *pctldev,
 
 	switch (param) {
 	case PIN_CONFIG_BIAS_DISABLE:
-		if (pin->bias != PM8XXX_GPIO_BIAS_NP)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->bias == PM8XXX_GPIO_BIAS_NP;
 		break;
 	case PIN_CONFIG_BIAS_PULL_DOWN:
-		if (pin->bias != PM8XXX_GPIO_BIAS_PD)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->bias == PM8XXX_GPIO_BIAS_PD;
 		break;
 	case PIN_CONFIG_BIAS_PULL_UP:
-		if (pin->bias > PM8XXX_GPIO_BIAS_PU_1P5_30)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->bias <= PM8XXX_GPIO_BIAS_PU_1P5_30;
 		break;
 	case PM8XXX_QCOM_PULL_UP_STRENGTH:
 		arg = pin->pull_up_strength;
 		break;
 	case PIN_CONFIG_BIAS_HIGH_IMPEDANCE:
-		if (!pin->disable)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->disable;
 		break;
 	case PIN_CONFIG_INPUT_ENABLE:
-		if (pin->mode != PM8XXX_GPIO_MODE_INPUT)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->mode == PM8XXX_GPIO_MODE_INPUT;
 		break;
 	case PIN_CONFIG_OUTPUT:
 		if (pin->mode & PM8XXX_GPIO_MODE_OUTPUT)
@@ -299,14 +290,10 @@ static int pm8xxx_pin_config_get(struct pinctrl_dev *pctldev,
 		arg = pin->output_strength;
 		break;
 	case PIN_CONFIG_DRIVE_PUSH_PULL:
-		if (pin->open_drain)
-			return -EINVAL;
-		arg = 1;
+		arg = !pin->open_drain;
 		break;
 	case PIN_CONFIG_DRIVE_OPEN_DRAIN:
-		if (!pin->open_drain)
-			return -EINVAL;
-		arg = 1;
+		arg = pin->open_drain;
 		break;
 	default:
 		return -EINVAL;
@@ -664,11 +651,12 @@ static int pm8xxx_pin_populate(struct pm8xxx_gpio *pctrl,
 }
 
 static const struct of_device_id pm8xxx_gpio_of_match[] = {
-	{ .compatible = "qcom,pm8018-gpio", .data = (void *)6 },
-	{ .compatible = "qcom,pm8038-gpio", .data = (void *)12 },
-	{ .compatible = "qcom,pm8058-gpio", .data = (void *)40 },
-	{ .compatible = "qcom,pm8917-gpio", .data = (void *)38 },
-	{ .compatible = "qcom,pm8921-gpio", .data = (void *)44 },
+	{ .compatible = "qcom,pm8018-gpio" },
+	{ .compatible = "qcom,pm8038-gpio" },
+	{ .compatible = "qcom,pm8058-gpio" },
+	{ .compatible = "qcom,pm8917-gpio" },
+	{ .compatible = "qcom,pm8921-gpio" },
+	{ .compatible = "qcom,ssbi-gpio" },
 	{ },
 };
 MODULE_DEVICE_TABLE(of, pm8xxx_gpio_of_match);
@@ -679,14 +667,19 @@ static int pm8xxx_gpio_probe(struct platform_device *pdev)
 	struct pinctrl_pin_desc *pins;
 	struct pm8xxx_gpio *pctrl;
 	int ret;
-	int i;
+	int i, npins;
 
 	pctrl = devm_kzalloc(&pdev->dev, sizeof(*pctrl), GFP_KERNEL);
 	if (!pctrl)
 		return -ENOMEM;
 
 	pctrl->dev = &pdev->dev;
-	pctrl->npins = (unsigned long)of_device_get_match_data(&pdev->dev);
+	npins = platform_irq_count(pdev);
+	if (!npins)
+		return -EINVAL;
+	if (npins < 0)
+		return npins;
+	pctrl->npins = npins;
 
 	pctrl->regmap = dev_get_regmap(pdev->dev.parent, NULL);
 	if (!pctrl->regmap) {
@@ -755,23 +748,12 @@ static int pm8xxx_gpio_probe(struct platform_device *pdev)
 		goto unregister_pinctrl;
 	}
 
-	/*
-	 * For DeviceTree-supported systems, the gpio core checks the
-	 * pinctrl's device node for the "gpio-ranges" property.
-	 * If it is present, it takes care of adding the pin ranges
-	 * for the driver. In this case the driver can skip ahead.
-	 *
-	 * In order to remain compatible with older, existing DeviceTree
-	 * files which don't set the "gpio-ranges" property or systems that
-	 * utilize ACPI the driver has to call gpiochip_add_pin_range().
-	 */
-	if (!of_property_read_bool(pctrl->dev->of_node, "gpio-ranges")) {
-		ret = gpiochip_add_pin_range(&pctrl->chip, dev_name(pctrl->dev),
-					     0, 0, pctrl->chip.ngpio);
-		if (ret) {
-			dev_err(pctrl->dev, "failed to add pin range\n");
-			goto unregister_gpiochip;
-		}
+	ret = gpiochip_add_pin_range(&pctrl->chip,
+				     dev_name(pctrl->dev),
+				     0, 0, pctrl->chip.ngpio);
+	if (ret) {
+		dev_err(pctrl->dev, "failed to add pin range\n");
+		goto unregister_gpiochip;
 	}
 
 	platform_set_drvdata(pdev, pctrl);

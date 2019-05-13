@@ -228,8 +228,7 @@ static void mlx4_set_eq_affinity_hint(struct mlx4_priv *priv, int vec)
 	struct mlx4_dev *dev = &priv->dev;
 	struct mlx4_eq *eq = &priv->eq_table.eq[vec];
 
-	if (!cpumask_available(eq->affinity_mask) ||
-	    cpumask_empty(eq->affinity_mask))
+	if (!eq->affinity_mask || cpumask_empty(eq->affinity_mask))
 		return;
 
 	hint_err = irq_set_affinity_hint(eq->irq, eq->affinity_mask);
@@ -930,10 +929,9 @@ static void __iomem *mlx4_get_eq_uar(struct mlx4_dev *dev, struct mlx4_eq *eq)
 
 	if (!priv->eq_table.uar_map[index]) {
 		priv->eq_table.uar_map[index] =
-			ioremap(
-				pci_resource_start(dev->persist->pdev, 2) +
-				((eq->eqn / 4) << (dev->uar_page_shift)),
-				(1 << (dev->uar_page_shift)));
+			ioremap(pci_resource_start(dev->persist->pdev, 2) +
+				((eq->eqn / 4) << PAGE_SHIFT),
+				PAGE_SIZE);
 		if (!priv->eq_table.uar_map[index]) {
 			mlx4_err(dev, "Couldn't map EQ doorbell for EQN 0x%06x\n",
 				 eq->eqn);
@@ -1241,8 +1239,9 @@ int mlx4_init_eq_table(struct mlx4_dev *dev)
 					mlx4_warn(dev, "Failed adding irq rmap\n");
 			}
 #endif
-			err = mlx4_create_eq(dev, dev->quotas.cq +
-					     MLX4_NUM_SPARE_EQE,
+			err = mlx4_create_eq(dev, dev->caps.num_cqs -
+						  dev->caps.reserved_cqs +
+						  MLX4_NUM_SPARE_EQE,
 					     (dev->flags & MLX4_FLAG_MSI_X) ?
 					     i + 1 - !!(i > MLX4_EQ_ASYNC) : 0,
 					     eq);

@@ -365,20 +365,11 @@ mwifiex_cfg80211_set_tx_power(struct wiphy *wiphy,
 	struct mwifiex_power_cfg power_cfg;
 	int dbm = MBM_TO_DBM(mbm);
 
-	switch (type) {
-	case NL80211_TX_POWER_FIXED:
+	if (type == NL80211_TX_POWER_FIXED) {
 		power_cfg.is_power_auto = 0;
-		power_cfg.is_power_fixed = 1;
 		power_cfg.power_level = dbm;
-		break;
-	case NL80211_TX_POWER_LIMITED:
-		power_cfg.is_power_auto = 0;
-		power_cfg.is_power_fixed = 0;
-		power_cfg.power_level = dbm;
-		break;
-	case NL80211_TX_POWER_AUTOMATIC:
+	} else {
 		power_cfg.is_power_auto = 1;
-		break;
 	}
 
 	priv = mwifiex_get_priv(adapter, MWIFIEX_BSS_ROLE_ANY);
@@ -1065,12 +1056,6 @@ mwifiex_cfg80211_change_virtual_intf(struct wiphy *wiphy,
 	struct mwifiex_private *priv = mwifiex_netdev_get_priv(dev);
 	enum nl80211_iftype curr_iftype = dev->ieee80211_ptr->iftype;
 
-	if (priv->scan_request) {
-		mwifiex_dbg(priv->adapter, ERROR,
-			    "change virtual interface: scan in process\n");
-		return -EBUSY;
-	}
-
 	switch (curr_iftype) {
 	case NL80211_IFTYPE_ADHOC:
 		switch (type) {
@@ -1165,12 +1150,6 @@ mwifiex_cfg80211_change_virtual_intf(struct wiphy *wiphy,
 			priv->adapter->curr_iface_comb.p2p_intf--;
 			priv->adapter->curr_iface_comb.sta_intf++;
 			dev->ieee80211_ptr->iftype = type;
-			if (mwifiex_deinit_priv_params(priv))
-				return -1;
-			if (mwifiex_init_new_priv_params(priv, dev, type))
-				return -1;
-			if (mwifiex_sta_init_cmd(priv, false, false))
-				return -1;
 			break;
 		case NL80211_IFTYPE_ADHOC:
 			if (mwifiex_cfg80211_deinit_p2p(priv))
@@ -2860,10 +2839,8 @@ int mwifiex_del_virtual_intf(struct wiphy *wiphy, struct wireless_dev *wdev)
 
 	mwifiex_stop_net_dev_queue(priv->netdev, adapter);
 
-	skb_queue_walk_safe(&priv->bypass_txq, skb, tmp) {
-		skb_unlink(skb, &priv->bypass_txq);
+	skb_queue_walk_safe(&priv->bypass_txq, skb, tmp)
 		mwifiex_write_data_complete(priv->adapter, skb, 0, -1);
-	}
 
 	if (netif_carrier_ok(priv->netdev))
 		netif_carrier_off(priv->netdev);
@@ -3826,10 +3803,6 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 	wiphy->cipher_suites = mwifiex_cipher_suites;
 	wiphy->n_cipher_suites = ARRAY_SIZE(mwifiex_cipher_suites);
 
-	if (adapter->region_code)
-		wiphy->regulatory_flags |= REGULATORY_DISABLE_BEACON_HINTS |
-					   REGULATORY_COUNTRY_IE_IGNORE;
-
 	ether_addr_copy(wiphy->perm_addr, adapter->perm_addr);
 	wiphy->signal_type = CFG80211_SIGNAL_TYPE_MBM;
 	wiphy->flags |= WIPHY_FLAG_HAVE_AP_SME |
@@ -3866,8 +3839,6 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 	if (adapter->fw_api_ver == MWIFIEX_FW_V15)
 		wiphy->features |= NL80211_FEATURE_SK_TX_STATUS;
 
-	marvell_set_vendor_commands(wiphy);
-
 	/* Reserve space for mwifiex specific private data for BSS */
 	wiphy->bss_priv_size = sizeof(struct mwifiex_bss_priv);
 
@@ -3892,15 +3863,11 @@ int mwifiex_register_cfg80211(struct mwifiex_adapter *adapter)
 			    "driver hint alpha2: %2.2s\n", reg_alpha2);
 		regulatory_hint(wiphy, reg_alpha2);
 	} else {
-		if (adapter->region_code == 0x00) {
-			mwifiex_dbg(adapter, WARN, "Ignore world regulatory domain\n");
-		} else {
-			country_code =
-				mwifiex_11d_code_2_region(adapter->region_code);
-			if (country_code &&
-			    regulatory_hint(wiphy, country_code))
-				mwifiex_dbg(priv->adapter, ERROR, "regulatory_hint() failed\n");
-		}
+		country_code = mwifiex_11d_code_2_region(adapter->region_code);
+		if (country_code)
+			mwifiex_dbg(adapter, WARN,
+				    "ignoring F/W country code %2.2s\n",
+				    country_code);
 	}
 
 	mwifiex_send_cmd(priv, HostCmd_CMD_802_11_SNMP_MIB,

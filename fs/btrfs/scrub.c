@@ -3460,7 +3460,7 @@ static noinline_for_stack int scrub_chunk(struct scrub_ctx *sctx,
 		return ret;
 	}
 
-	map = em->map_lookup;
+	map = (struct map_lookup *)em->bdev;
 	if (em->start != chunk_offset)
 		goto out;
 
@@ -3836,7 +3836,7 @@ int btrfs_scrub_dev(struct btrfs_fs_info *fs_info, u64 devid, u64 start,
 
 
 	mutex_lock(&fs_info->fs_devices->device_list_mutex);
-	dev = btrfs_find_device(fs_info->fs_devices, devid, NULL, NULL, true);
+	dev = btrfs_find_device(fs_info, devid, NULL, NULL);
 	if (!dev || (dev->missing && !is_dev_replace)) {
 		mutex_unlock(&fs_info->fs_devices->device_list_mutex);
 		return -ENODEV;
@@ -4005,7 +4005,7 @@ int btrfs_scrub_progress(struct btrfs_root *root, u64 devid,
 	struct scrub_ctx *sctx = NULL;
 
 	mutex_lock(&root->fs_info->fs_devices->device_list_mutex);
-	dev = btrfs_find_device(root->fs_info->fs_devices, devid, NULL, NULL, true);
+	dev = btrfs_find_device(root->fs_info, devid, NULL, NULL);
 	if (dev)
 		sctx = dev->scrub_device;
 	if (sctx)

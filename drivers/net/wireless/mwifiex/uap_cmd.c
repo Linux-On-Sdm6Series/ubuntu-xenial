@@ -286,8 +286,6 @@ mwifiex_set_uap_rates(struct mwifiex_uap_bss_param *bss_cfg,
 
 	rate_ie = (void *)cfg80211_find_ie(WLAN_EID_SUPP_RATES, var_pos, len);
 	if (rate_ie) {
-		if (rate_ie->len > MWIFIEX_SUPPORTED_RATES)
-			return;
 		memcpy(bss_cfg->rates, rate_ie + 1, rate_ie->len);
 		rate_len = rate_ie->len;
 	}
@@ -295,11 +293,8 @@ mwifiex_set_uap_rates(struct mwifiex_uap_bss_param *bss_cfg,
 	rate_ie = (void *)cfg80211_find_ie(WLAN_EID_EXT_SUPP_RATES,
 					   params->beacon.tail,
 					   params->beacon.tail_len);
-	if (rate_ie) {
-		if (rate_ie->len > MWIFIEX_SUPPORTED_RATES - rate_len)
-			return;
+	if (rate_ie)
 		memcpy(bss_cfg->rates + rate_len, rate_ie + 1, rate_ie->len);
-	}
 
 	return;
 }
@@ -417,8 +412,6 @@ mwifiex_set_wmm_params(struct mwifiex_private *priv,
 					    params->beacon.tail_len);
 	if (vendor_ie) {
 		wmm_ie = (struct ieee_types_header *)vendor_ie;
-		if (*(vendor_ie + 1) > sizeof(struct mwifiex_types_wmm_info))
-			return;
 		memcpy(&bss_cfg->wmm_info, wmm_ie + 1,
 		       sizeof(bss_cfg->wmm_info));
 		priv->wmm_enabled = 1;
@@ -855,9 +848,9 @@ int mwifiex_config_start_uap(struct mwifiex_private *priv,
 
 	if (mwifiex_send_cmd(priv, HostCmd_CMD_UAP_SYS_CONFIG,
 			     HostCmd_ACT_GEN_SET,
-			     UAP_BSS_PARAMS_I, bss_cfg, true)) {
+			     UAP_BSS_PARAMS_I, bss_cfg, false)) {
 		mwifiex_dbg(priv->adapter, ERROR,
-			    "Failed to set AP configuration\n");
+			    "Failed to set the SSID\n");
 		return -1;
 	}
 
@@ -872,7 +865,7 @@ int mwifiex_config_start_uap(struct mwifiex_private *priv,
 	}
 
 	if (mwifiex_send_cmd(priv, HostCmd_CMD_UAP_BSS_START,
-			     HostCmd_ACT_GEN_SET, 0, NULL, true)) {
+			     HostCmd_ACT_GEN_SET, 0, NULL, false)) {
 		mwifiex_dbg(priv->adapter, ERROR,
 			    "Failed to start the BSS\n");
 		return -1;

@@ -21,6 +21,7 @@
 #include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/of_platform.h>
+#include <linux/of_reserved_mem.h>
 #include <linux/platform_device.h>
 
 const struct of_device_id of_default_bus_match_table[] = {
@@ -139,7 +140,7 @@ struct platform_device *of_device_alloc(struct device_node *np,
 	}
 
 	dev->dev.of_node = of_node_get(np);
-	dev->dev.parent = parent ? : &platform_bus;
+	dev->dev.parent = parent;
 
 	if (bus_id)
 		dev_set_name(&dev->dev, "%s", bus_id);
@@ -149,6 +150,11 @@ struct platform_device *of_device_alloc(struct device_node *np,
 	return dev;
 }
 EXPORT_SYMBOL(of_device_alloc);
+
+static void of_dma_deconfigure(struct device *dev)
+{
+	arch_teardown_dma_ops(dev);
+}
 
 /**
  * of_platform_device_create_pdata - Alloc, initialize and register an of_device
@@ -178,10 +184,12 @@ static struct platform_device *of_platform_device_create_pdata(
 
 	dev->dev.bus = &platform_bus_type;
 	dev->dev.platform_data = platform_data;
-	of_dma_configure_masks(&dev->dev, dev->dev.of_node);
+	of_dma_configure(&dev->dev, dev->dev.of_node);
 	of_msi_configure(&dev->dev, dev->dev.of_node);
+	of_reserved_mem_device_init(&dev->dev);
 
 	if (of_device_add(dev) != 0) {
+		of_dma_deconfigure(&dev->dev);
 		platform_device_put(dev);
 		goto err_clear_flag;
 	}
@@ -235,14 +243,13 @@ static struct amba_device *of_amba_device_create(struct device_node *node,
 
 	/* setup generic device info */
 	dev->dev.of_node = of_node_get(node);
-	dev->dev.parent = parent ? : &platform_bus;
+	dev->dev.parent = parent;
 	dev->dev.platform_data = platform_data;
 	if (bus_id)
 		dev_set_name(&dev->dev, "%s", bus_id);
 	else
 		of_device_make_bus_id(&dev->dev);
-	of_dma_configure_masks(&dev->dev, dev->dev.of_node);
-	of_dma_configure_ops(&dev->dev, dev->dev.of_node);
+	of_dma_configure(&dev->dev, dev->dev.of_node);
 
 	/* Allow the HW Peripheral ID to be overridden */
 	prop = of_get_property(node, "arm,primecell-periphid", NULL);
@@ -478,12 +485,11 @@ static int of_platform_device_destroy(struct device *dev, void *data)
 	if (dev->bus == &platform_bus_type)
 		platform_device_unregister(to_platform_device(dev));
 #ifdef CONFIG_ARM_AMBA
-	else if (dev->bus == &amba_bustype) {
+	else if (dev->bus == &amba_bustype)
 		amba_device_unregister(to_amba_device(dev));
-		of_dma_deconfigure(dev);
-	}
 #endif
 
+	of_dma_deconfigure(dev);
 	of_node_clear_flag(dev->of_node, OF_POPULATED);
 	of_node_clear_flag(dev->of_node, OF_POPULATED_BUS);
 	return 0;

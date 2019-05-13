@@ -331,13 +331,11 @@ void ext4_free_inode(handle_t *handle, struct inode *inode)
 
 	percpu_counter_inc(&sbi->s_freeinodes_counter);
 	if (sbi->s_log_groups_per_flex) {
-		struct flex_groups *fg;
+		ext4_group_t f = ext4_flex_group(sbi, block_group);
 
-		fg = sbi_array_rcu_deref(sbi, s_flex_groups,
-					 ext4_flex_group(sbi, block_group));
-		atomic_inc(&fg->free_inodes);
+		atomic_inc(&sbi->s_flex_groups[f].free_inodes);
 		if (is_directory)
-			atomic_dec(&fg->used_dirs);
+			atomic_dec(&sbi->s_flex_groups[f].used_dirs);
 	}
 	BUFFER_TRACE(bh2, "call ext4_handle_dirty_metadata");
 	fatal = ext4_handle_dirty_metadata(handle, NULL, bh2);
@@ -378,13 +376,12 @@ static void get_orlov_stats(struct super_block *sb, ext4_group_t g,
 			    int flex_size, struct orlov_stats *stats)
 {
 	struct ext4_group_desc *desc;
+	struct flex_groups *flex_group = EXT4_SB(sb)->s_flex_groups;
 
 	if (flex_size > 1) {
-		struct flex_groups *fg = sbi_array_rcu_deref(EXT4_SB(sb),
-							     s_flex_groups, g);
-		stats->free_inodes = atomic_read(&fg->free_inodes);
-		stats->free_clusters = atomic64_read(&fg->free_clusters);
-		stats->used_dirs = atomic_read(&fg->used_dirs);
+		stats->free_inodes = atomic_read(&flex_group[g].free_inodes);
+		stats->free_clusters = atomic64_read(&flex_group[g].free_clusters);
+		stats->used_dirs = atomic_read(&flex_group[g].used_dirs);
 		return;
 	}
 
@@ -745,10 +742,6 @@ struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
 	if (!dir || !dir->i_nlink)
 		return ERR_PTR(-EPERM);
 
-	/* Supplied owner must be valid */
-	if (owner && (owner[0] == (uid_t)-1 || owner[1] == (uid_t)-1))
-		return ERR_PTR(-EOVERFLOW);
-
 	if ((ext4_encrypted_inode(dir) ||
 	     DUMMY_ENCRYPTION_ENABLED(EXT4_SB(dir->i_sb))) &&
 	    (S_ISREG(mode) || S_ISDIR(mode) || S_ISLNK(mode))) {
@@ -761,6 +754,7 @@ struct inode *__ext4_new_inode(handle_t *handle, struct inode *dir,
 			nblocks += EXT4_DATA_TRANS_BLOCKS(dir->i_sb);
 		encrypt = 1;
 	}
+
 	sb = dir->i_sb;
 	ngroups = ext4_get_groups_count(sb);
 	trace_ext4_request_inode(dir, mode);
@@ -987,8 +981,7 @@ got:
 		if (sbi->s_log_groups_per_flex) {
 			ext4_group_t f = ext4_flex_group(sbi, group);
 
-			atomic_inc(&sbi_array_rcu_deref(sbi, s_flex_groups,
-							f)->used_dirs);
+			atomic_inc(&sbi->s_flex_groups[f].used_dirs);
 		}
 	}
 	if (ext4_has_group_desc_csum(sb)) {
@@ -1011,8 +1004,7 @@ got:
 
 	if (sbi->s_log_groups_per_flex) {
 		flex_group = ext4_flex_group(sbi, group);
-		atomic_dec(&sbi_array_rcu_deref(sbi, s_flex_groups,
-						flex_group)->free_inodes);
+		atomic_dec(&sbi->s_flex_groups[flex_group].free_inodes);
 	}
 
 	inode->i_ino = ino + group * EXT4_INODES_PER_GROUP(sb);

@@ -194,7 +194,6 @@ config CHR_DEV_SCH
 config SCSI_ENCLOSURE
 	tristate "SCSI Enclosure Support"
 	depends on SCSI && ENCLOSURE_SERVICES
-	depends on m || SCSI_SAS_ATTRS != m
 	help
 	  Enclosures are devices sitting on or in SCSI backplanes that
 	  manage devices.  If you have a disk cage, the chances are that
@@ -846,23 +845,6 @@ config SCSI_IBMVSCSI
 	  To compile this driver as a module, choose M here: the
 	  module will be called ibmvscsi.
 
-config SCSI_IBMVSCSIS
-	tristate "IBM Virtual SCSI Server support"
-	depends on PPC_PSERIES && TARGET_CORE && SCSI && PCI
-	help
-	  This is the IBM POWER Virtual SCSI Target Server
-	  This driver uses the SRP protocol for communication betwen servers
-	  guest and/or the host that run on the same server.
-	  More information on VSCSI protocol can be found at www.power.org
-
-	  The userspace configuration needed to initialize the driver can be
-	  be found here:
-
-	  https://github.com/powervm/ibmvscsis/wiki/Configuration
-
-	  To compile this driver as a module, choose M here: the
-	  module will be called ibmvscsis.
-
 config SCSI_IBMVFC
 	tristate "IBM Virtual FC support"
 	depends on PPC_PSERIES && SCSI
@@ -1031,7 +1013,7 @@ config SCSI_SNI_53C710
 
 config 53C700_LE_ON_BE
 	bool
-	depends on SCSI_LASI700 || SCSI_SNI_53C710
+	depends on SCSI_LASI700
 	default y
 
 config SCSI_STEX

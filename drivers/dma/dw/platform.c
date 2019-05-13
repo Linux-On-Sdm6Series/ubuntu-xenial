@@ -87,20 +87,13 @@ static void dw_dma_acpi_controller_register(struct dw_dma *dw)
 	dma_cap_set(DMA_SLAVE, info->dma_cap);
 	info->filter_fn = dw_dma_acpi_filter;
 
-	ret = acpi_dma_controller_register(dev, acpi_dma_simple_xlate, info);
+	ret = devm_acpi_dma_controller_register(dev, acpi_dma_simple_xlate,
+						info);
 	if (ret)
 		dev_err(dev, "could not register acpi_dma_controller\n");
 }
-
-static void dw_dma_acpi_controller_free(struct dw_dma *dw)
-{
-	struct device *dev = dw->dma.dev;
-
-	acpi_dma_controller_free(dev);
-}
 #else /* !CONFIG_ACPI */
 static inline void dw_dma_acpi_controller_register(struct dw_dma *dw) {}
-static inline void dw_dma_acpi_controller_free(struct dw_dma *dw) {}
 #endif /* !CONFIG_ACPI */
 
 #ifdef CONFIG_OF
@@ -232,9 +225,6 @@ static int dw_remove(struct platform_device *pdev)
 {
 	struct dw_dma_chip *chip = platform_get_drvdata(pdev);
 
-	if (ACPI_HANDLE(&pdev->dev))
-		dw_dma_acpi_controller_free(chip->dw);
-
 	if (pdev->dev.of_node)
 		of_dma_controller_free(pdev->dev.of_node);
 
@@ -249,19 +239,7 @@ static void dw_shutdown(struct platform_device *pdev)
 {
 	struct dw_dma_chip *chip = platform_get_drvdata(pdev);
 
-	/*
-	 * We have to call dw_dma_disable() to stop any ongoing transfer. On
-	 * some platforms we can't do that since DMA device is powered off.
-	 * Moreover we have no possibility to check if the platform is affected
-	 * or not. That's why we call pm_runtime_get_sync() / pm_runtime_put()
-	 * unconditionally. On the other hand we can't use
-	 * pm_runtime_suspended() because runtime PM framework is not fully
-	 * used by the driver.
-	 */
-	pm_runtime_get_sync(chip->dev);
 	dw_dma_disable(chip);
-	pm_runtime_put_sync_suspend(chip->dev);
-
 	clk_disable_unprepare(chip->clk);
 }
 

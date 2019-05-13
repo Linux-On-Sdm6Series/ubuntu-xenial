@@ -798,8 +798,6 @@ struct intel_digital_port {
 	struct intel_hdmi hdmi;
 	enum irqreturn (*hpd_pulse)(struct intel_digital_port *, bool);
 	bool release_cl2_override;
-	/* for communication with audio component; protected by av_mutex */
-	const struct drm_connector *audio_connector;
 };
 
 struct intel_dp_mst_encoder {
@@ -971,7 +969,7 @@ void gen8_irq_power_well_post_enable(struct drm_i915_private *dev_priv,
 
 /* intel_crt.c */
 void intel_crt_init(struct drm_device *dev);
-void intel_crt_reset(struct drm_encoder *encoder);
+
 
 /* intel_ddi.c */
 void intel_prepare_ddi(struct drm_device *dev);
@@ -1244,8 +1242,6 @@ void intel_dsi_init(struct drm_device *dev);
 
 /* intel_dvo.c */
 void intel_dvo_init(struct drm_device *dev);
-/* intel_hotplug.c */
-void intel_hpd_poll_init(struct drm_i915_private *dev_priv);
 
 
 /* legacy fbdev emulation in intel_fbdev.c */
@@ -1414,9 +1410,6 @@ void intel_enable_gt_powersave(struct drm_device *dev);
 void intel_disable_gt_powersave(struct drm_device *dev);
 void intel_suspend_gt_powersave(struct drm_device *dev);
 void intel_reset_gt_powersave(struct drm_device *dev);
-bool i915_rc6_ctx_wa_check(struct drm_i915_private *i915);
-void i915_rc6_ctx_wa_suspend(struct drm_i915_private *i915);
-void i915_rc6_ctx_wa_resume(struct drm_i915_private *i915);
 void gen6_update_ring_freq(struct drm_device *dev);
 void gen6_rps_busy(struct drm_i915_private *dev_priv);
 void gen6_rps_reset_ei(struct drm_i915_private *dev_priv);

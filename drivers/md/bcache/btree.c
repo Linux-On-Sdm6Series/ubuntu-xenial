@@ -665,7 +665,6 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 	struct btree *b, *t;
 	unsigned long i, nr = sc->nr_to_scan;
 	unsigned long freed = 0;
-	unsigned int btree_cache_used;
 
 	if (c->shrinker_disabled)
 		return SHRINK_STOP;
@@ -687,15 +686,12 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 	 * IO can always make forward progress:
 	 */
 	nr /= c->btree_pages;
-	if (nr == 0)
-		nr = 1;
 	nr = min_t(unsigned long, nr, mca_can_free(c));
 
 	i = 0;
-	btree_cache_used = c->btree_cache_used;
 	list_for_each_entry_safe(b, t, &c->btree_cache_freeable, list) {
-		if (nr <= 0)
-			goto out;
+		if (freed >= nr)
+			break;
 
 		if (++i > 3 &&
 		    !mca_reap(b, 0, false)) {
@@ -703,10 +699,9 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 			rw_unlock(true, b);
 			freed++;
 		}
-		nr--;
 	}
 
-	for (;  (nr--) && i < btree_cache_used; i++) {
+	for (i = 0; (nr--) && i < c->btree_cache_used; i++) {
 		if (list_empty(&c->btree_cache))
 			goto out;
 
@@ -724,7 +719,7 @@ static unsigned long bch_mca_scan(struct shrinker *shrink,
 	}
 out:
 	mutex_unlock(&c->bucket_lock);
-	return freed * c->btree_pages;
+	return freed;
 }
 
 static unsigned long bch_mca_count(struct shrinker *shrink,
@@ -964,7 +959,7 @@ err:
 	return b;
 }
 
-/*
+/**
  * bch_btree_node_get - find a btree node in the cache and lock it, reading it
  * in from disk if necessary.
  *
@@ -2175,7 +2170,7 @@ int bch_btree_insert_check_key(struct btree *b, struct btree_op *op,
 
 		if (b->key.ptr[0] != btree_ptr ||
                    b->seq != seq + 1) {
-			op->lock = b->level;
+                       op->lock = b->level;
 			goto out;
                }
 	}
@@ -2377,7 +2372,7 @@ static int refill_keybuf_fn(struct btree_op *op, struct btree *b,
 	struct keybuf *buf = refill->buf;
 	int ret = MAP_CONTINUE;
 
-	if (bkey_cmp(k, refill->end) > 0) {
+	if (bkey_cmp(k, refill->end) >= 0) {
 		ret = MAP_DONE;
 		goto out;
 	}

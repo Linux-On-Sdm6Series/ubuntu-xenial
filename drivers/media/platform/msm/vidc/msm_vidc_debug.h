@@ -1,4 +1,4 @@
-/* Copyright (c) 2012-2014, The Linux Foundation. All rights reserved.
+/* Copyright (c) 2012-2015, 2017, The Linux Foundation. All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 and
@@ -13,17 +13,17 @@
 
 #ifndef __MSM_VIDC_DEBUG__
 #define __MSM_VIDC_DEBUG__
-
 #include <linux/debugfs.h>
 #include <linux/delay.h>
-
 #include "msm_vidc_internal.h"
+#include "trace/events/msm_vidc.h"
 
 #ifndef VIDC_DBG_LABEL
 #define VIDC_DBG_LABEL "msm_vidc"
 #endif
 
 #define VIDC_DBG_TAG VIDC_DBG_LABEL ": %4s: "
+#define VIDC_DBG_WARN_ENABLE (msm_vidc_debug & VIDC_INFO)
 
 /* To enable messages OR these values and
  * echo the result to debugfs file.
@@ -53,19 +53,21 @@ enum msm_vidc_debugfs_event {
 	MSM_VIDC_DEBUGFS_EVENT_FBD,
 };
 
-extern int vidc_debug;
-extern int vidc_debug_out;
-extern int vidc_fw_debug;
-extern int vidc_fw_debug_mode;
-extern int vidc_fw_low_power_mode;
-extern int vidc_hw_rsp_timeout;
-extern bool vidc_fw_coverage;
-extern bool vidc_vpe_csc_601_to_709;
-extern bool vidc_dec_dcvs_mode;
-extern bool vidc_enc_dcvs_mode;
-extern bool vidc_sys_idle_indicator;
-extern int vidc_firmware_unload_delay;
-extern bool vidc_thermal_mitigation_disabled;
+extern int msm_vidc_debug;
+extern int msm_vidc_debug_out;
+extern int msm_vidc_fw_debug;
+extern int msm_vidc_fw_debug_mode;
+extern int msm_vidc_fw_low_power_mode;
+extern int msm_vidc_hw_rsp_timeout;
+extern bool msm_vidc_fw_coverage;
+extern bool msm_vidc_vpe_csc_601_to_709;
+extern bool msm_vidc_dec_dcvs_mode;
+extern bool msm_vidc_enc_dcvs_mode;
+extern bool msm_vidc_sys_idle_indicator;
+extern int msm_vidc_firmware_unload_delay;
+extern bool msm_vidc_thermal_mitigation_disabled;
+extern bool msm_vidc_bitrate_clock_scaling;
+extern bool msm_vidc_debug_timeout;
 
 #define VIDC_MSG_PRIO2STRING(__level) ({ \
 	char *__str; \
@@ -102,12 +104,12 @@ extern bool vidc_thermal_mitigation_disabled;
 
 #define dprintk(__level, __fmt, arg...)	\
 	do { \
-		if (vidc_debug & __level) { \
-			if (vidc_debug_out == VIDC_OUT_PRINTK) { \
+		if (msm_vidc_debug & __level) { \
+			if (msm_vidc_debug_out == VIDC_OUT_PRINTK) { \
 				pr_info(VIDC_DBG_TAG __fmt, \
 						VIDC_MSG_PRIO2STRING(__level), \
 						## arg); \
-			} else if (vidc_debug_out == VIDC_OUT_FTRACE) { \
+			} else if (msm_vidc_debug_out == VIDC_OUT_FTRACE) { \
 				trace_printk(KERN_DEBUG VIDC_DBG_TAG __fmt, \
 						VIDC_MSG_PRIO2STRING(__level), \
 						## arg); \
@@ -115,19 +117,25 @@ extern bool vidc_thermal_mitigation_disabled;
 		} \
 	} while (0)
 
-struct dentry *vidc_debugfs_init_drv(void);
-struct dentry *vidc_debugfs_init_core(struct vidc_core *core,
-				      struct dentry *parent);
-struct dentry *vidc_debugfs_init_inst(struct vidc_inst *inst,
-				      struct dentry *parent);
-void vidc_debugfs_update(struct vidc_inst *inst, enum msm_vidc_debugfs_event e);
 
-static inline void tic(struct vidc_inst *i, enum profiling_points p, char *b)
+
+struct dentry *msm_vidc_debugfs_init_drv(void);
+struct dentry *msm_vidc_debugfs_init_core(struct msm_vidc_core *core,
+		struct dentry *parent);
+struct dentry *msm_vidc_debugfs_init_inst(struct msm_vidc_inst *inst,
+		struct dentry *parent);
+void msm_vidc_debugfs_deinit_inst(struct msm_vidc_inst *inst);
+void msm_vidc_debugfs_update(struct msm_vidc_inst *inst,
+		enum msm_vidc_debugfs_event e);
+
+static inline void tic(struct msm_vidc_inst *i, enum profiling_points p,
+				 char *b)
 {
 	struct timeval __ddl_tv;
 	if (!i->debug.pdata[p].name[0])
 		memcpy(i->debug.pdata[p].name, b, 64);
-	if ((vidc_debug & VIDC_PROF) && i->debug.pdata[p].sampling) {
+	if ((msm_vidc_debug & VIDC_PROF) &&
+		i->debug.pdata[p].sampling) {
 		do_gettimeofday(&__ddl_tv);
 		i->debug.pdata[p].start =
 			(__ddl_tv.tv_sec * 1000) + (__ddl_tv.tv_usec / 1000);
@@ -135,10 +143,11 @@ static inline void tic(struct vidc_inst *i, enum profiling_points p, char *b)
 	}
 }
 
-static inline void toc(struct vidc_inst *i, enum profiling_points p)
+static inline void toc(struct msm_vidc_inst *i, enum profiling_points p)
 {
 	struct timeval __ddl_tv;
-	if ((vidc_debug & VIDC_PROF) && !i->debug.pdata[p].sampling) {
+	if ((msm_vidc_debug & VIDC_PROF) &&
+		!i->debug.pdata[p].sampling) {
 		do_gettimeofday(&__ddl_tv);
 		i->debug.pdata[p].stop = (__ddl_tv.tv_sec * 1000)
 			+ (__ddl_tv.tv_usec / 1000);
@@ -148,21 +157,22 @@ static inline void toc(struct vidc_inst *i, enum profiling_points p)
 	}
 }
 
-static inline void show_stats(struct vidc_inst *i)
+static inline void show_stats(struct msm_vidc_inst *i)
 {
 	int x;
 	for (x = 0; x < MAX_PROFILING_POINTS; x++) {
-		if (i->debug.pdata[x].name[0] && (vidc_debug & VIDC_PROF)) {
+		if (i->debug.pdata[x].name[0] &&
+				(msm_vidc_debug & VIDC_PROF)) {
 			if (i->debug.samples) {
 				dprintk(VIDC_PROF, "%s averaged %d ms/sample\n",
-					i->debug.pdata[x].name,
-					i->debug.pdata[x].cumulative /
-					i->debug.samples);
+						i->debug.pdata[x].name,
+						i->debug.pdata[x].cumulative /
+						i->debug.samples);
 			}
 
 			dprintk(VIDC_PROF, "%s Samples: %d\n",
-				i->debug.pdata[x].name,
-				i->debug.samples);
+					i->debug.pdata[x].name,
+					i->debug.samples);
 		}
 	}
 }

@@ -102,11 +102,6 @@ int is_valid_bugaddr(unsigned long addr);
 
 #else	/* !CONFIG_GENERIC_BUG */
 
-static inline void *find_bug(unsigned long bugaddr)
-{
-	return NULL;
-}
-
 static inline enum bug_trap_type report_bug(unsigned long bug_addr,
 					    struct pt_regs *regs)
 {
@@ -114,4 +109,10 @@ static inline enum bug_trap_type report_bug(unsigned long bug_addr,
 }
 
 #endif	/* CONFIG_GENERIC_BUG */
+
+#ifdef CONFIG_PANIC_ON_DATA_CORRUPTION
+#define PANIC_CORRUPTION 1
+#else
+#define PANIC_CORRUPTION 0
+#endif  /* CONFIG_PANIC_ON_DATA_CORRUPTION */
 #endif	/* _LINUX_BUG_H */

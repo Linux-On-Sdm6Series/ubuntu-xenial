@@ -197,19 +197,10 @@ int ovl_set_attr(struct dentry *upperdentry, struct kstat *stat)
 {
 	int err = 0;
 
-	/*
-	 * For the most part we want to set the mode bits before setting
-	 * the user, otherwise the current context might lack permission
-	 * for setting the mode. However for sxid/sticky bits we want
-	 * the operation to fail if the current user isn't privileged
-	 * towards the resulting inode. So we first set the mode but
-	 * exclude the sxid/sticky bits, then set the user, then set the
-	 * mode again if any of the sxid/sticky bits are set.
-	 */
 	if (!S_ISLNK(stat->mode)) {
 		struct iattr attr = {
 			.ia_valid = ATTR_MODE,
-			.ia_mode = stat->mode & ~(S_ISUID|S_ISGID|S_ISVTX),
+			.ia_mode = stat->mode,
 		};
 		err = notify_change(upperdentry, &attr, NULL);
 	}
@@ -218,14 +209,6 @@ int ovl_set_attr(struct dentry *upperdentry, struct kstat *stat)
 			.ia_valid = ATTR_UID | ATTR_GID,
 			.ia_uid = stat->uid,
 			.ia_gid = stat->gid,
-		};
-		err = notify_change(upperdentry, &attr, NULL);
-	}
-	if (!err && !S_ISLNK(stat->mode) &&
-	    (stat->mode & (S_ISUID|S_ISGID|S_ISVTX))) {
-		struct iattr attr = {
-			.ia_valid = ATTR_MODE,
-			.ia_mode = stat->mode,
 		};
 		err = notify_change(upperdentry, &attr, NULL);
 	}
@@ -334,21 +317,14 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 	struct dentry *upperdir;
 	struct dentry *upperdentry;
 	const struct cred *old_cred;
+	struct cred *override_cred;
 	char *link = NULL;
 
 	if (WARN_ON(!workdir))
 		return -EROFS;
 
-	err = ovl_dentry_root_may(dentry, lowerpath, MAY_READ);
-	if (err)
-		return err;
-
 	ovl_path_upper(parent, &parentpath);
 	upperdir = parentpath.dentry;
-
-	err = ovl_dentry_root_may(dentry, &parentpath, MAY_WRITE);
-	if (err)
-		return err;
 
 	err = vfs_getattr(&parentpath, &pstat);
 	if (err)
@@ -360,7 +336,28 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 			return PTR_ERR(link);
 	}
 
-	old_cred = ovl_override_creds(dentry->d_sb);
+	err = -ENOMEM;
+	override_cred = prepare_creds();
+	if (!override_cred)
+		goto out_free_link;
+
+	override_cred->fsuid = stat->uid;
+	override_cred->fsgid = stat->gid;
+	/*
+	 * CAP_SYS_ADMIN for copying up extended attributes
+	 * CAP_DAC_OVERRIDE for create
+	 * CAP_FOWNER for chmod, timestamp update
+	 * CAP_FSETID for chmod
+	 * CAP_CHOWN for chown
+	 * CAP_MKNOD for mknod
+	 */
+	cap_raise(override_cred->cap_effective, CAP_SYS_ADMIN);
+	cap_raise(override_cred->cap_effective, CAP_DAC_OVERRIDE);
+	cap_raise(override_cred->cap_effective, CAP_FOWNER);
+	cap_raise(override_cred->cap_effective, CAP_FSETID);
+	cap_raise(override_cred->cap_effective, CAP_CHOWN);
+	cap_raise(override_cred->cap_effective, CAP_MKNOD);
+	old_cred = override_creds(override_cred);
 
 	err = -EIO;
 	if (lock_rename(workdir, upperdir) != NULL) {
@@ -383,7 +380,9 @@ int ovl_copy_up_one(struct dentry *parent, struct dentry *dentry,
 out_unlock:
 	unlock_rename(workdir, upperdir);
 	revert_creds(old_cred);
+	put_cred(override_cred);
 
+out_free_link:
 	if (link)
 		free_page((unsigned long) link);
 

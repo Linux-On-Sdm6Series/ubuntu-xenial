@@ -1409,11 +1409,10 @@ static void make_response(struct xen_blkif *blkif, u64 id,
 {
 	struct blkif_response *resp;
 	unsigned long     flags;
-	union blkif_back_rings *blk_rings;
+	union blkif_back_rings *blk_rings = &blkif->blk_rings;
 	int notify;
 
 	spin_lock_irqsave(&blkif->blk_ring_lock, flags);
-	blk_rings = &blkif->blk_rings;
 	/* Place on the response ring for the relevant domain. */
 	switch (blkif->blk_protocol) {
 	case BLKIF_PROTOCOL_NATIVE:

@@ -3532,16 +3532,6 @@ static void bnx2x_drv_info_iscsi_stat(struct bnx2x *bp)
  */
 static void bnx2x_config_mf_bw(struct bnx2x *bp)
 {
-	/* Workaround for MFW bug.
-	 * MFW is not supposed to generate BW attention in
-	 * single function mode.
-	 */
-	if (!IS_MF(bp)) {
-		DP(BNX2X_MSG_MCP,
-		   "Ignoring MF BW config in single function mode\n");
-		return;
-	}
-
 	if (bp->link_vars.link_up) {
 		bnx2x_cmng_fns_init(bp, true, CMNG_FNS_MINMAX);
 		bnx2x_link_sync_notify(bp);
@@ -9942,18 +9932,10 @@ static void bnx2x_recovery_failed(struct bnx2x *bp)
  */
 static void bnx2x_parity_recover(struct bnx2x *bp)
 {
+	bool global = false;
 	u32 error_recovered, error_unrecovered;
-	bool is_parity, global = false;
-#ifdef CONFIG_BNX2X_SRIOV
-	int vf_idx;
+	bool is_parity;
 
-	for (vf_idx = 0; vf_idx < bp->requested_nr_virtfn; vf_idx++) {
-		struct bnx2x_virtf *vf = BP_VF(bp, vf_idx);
-
-		if (vf)
-			vf->state = VF_LOST;
-	}
-#endif
 	DP(NETIF_MSG_HW, "Handling parity\n");
 	while (1) {
 		switch (bp->recovery_state) {
@@ -12842,24 +12824,6 @@ static netdev_features_t bnx2x_features_check(struct sk_buff *skb,
 					      struct net_device *dev,
 					      netdev_features_t features)
 {
-	/*
-	 * A skb with gso_size + header length > 9700 will cause a
-	 * firmware panic. Drop GSO support.
-	 *
-	 * Eventually the upper layer should not pass these packets down.
-	 *
-	 * For speed, if the gso_size is <= 9000, assume there will
-	 * not be 700 bytes of headers and pass it through. Only do a
-	 * full (slow) validation if the gso_size is > 9000.
-	 *
-	 * (Due to the way SKB_BY_FRAGS works this will also do a full
-	 * validation in that case.)
-	 */
-	if (unlikely(skb_is_gso(skb) &&
-		     (skb_shinfo(skb)->gso_size > 9000) &&
-		     !skb_gso_validate_mac_len(skb, 9700)))
-		features &= ~NETIF_F_GSO_MASK;
-
 	features = vlan_features_check(skb, features);
 	return vxlan_features_check(skb, features);
 }
@@ -12881,71 +12845,52 @@ static int __bnx2x_vlan_configure_vid(struct bnx2x *bp, u16 vid, bool add)
 	return rc;
 }
 
-static int bnx2x_vlan_configure_vid_list(struct bnx2x *bp)
+int bnx2x_vlan_reconfigure_vid(struct bnx2x *bp)
 {
 	struct bnx2x_vlan_entry *vlan;
 	int rc = 0;
 
-	/* Configure all non-configured entries */
+	if (!bp->vlan_cnt) {
+		DP(NETIF_MSG_IFUP, "No need to re-configure vlan filters\n");
+		return 0;
+	}
+
 	list_for_each_entry(vlan, &bp->vlan_reg, link) {
-		if (vlan->hw)
+		/* Prepare for cleanup in case of errors */
+		if (rc) {
+			vlan->hw = false;
+			continue;
+		}
+
+		if (!vlan->hw)
 			continue;
 
-		if (bp->vlan_cnt >= bp->vlan_credit)
-			return -ENOBUFS;
+		DP(NETIF_MSG_IFUP, "Re-configuring vlan 0x%04x\n", vlan->vid);
 
 		rc = __bnx2x_vlan_configure_vid(bp, vlan->vid, true);
 		if (rc) {
-			BNX2X_ERR("Unable to config VLAN %d\n", vlan->vid);
-			return rc;
-		}
-
-		DP(NETIF_MSG_IFUP, "HW configured for VLAN %d\n", vlan->vid);
-		vlan->hw = true;
-		bp->vlan_cnt++;
-	}
-
-	return 0;
-}
-
-static void bnx2x_vlan_configure(struct bnx2x *bp, bool set_rx_mode)
-{
-	bool need_accept_any_vlan;
-
-	need_accept_any_vlan = !!bnx2x_vlan_configure_vid_list(bp);
-
-	if (bp->accept_any_vlan != need_accept_any_vlan) {
-		bp->accept_any_vlan = need_accept_any_vlan;
-		DP(NETIF_MSG_IFUP, "Accept all VLAN %s\n",
-		   bp->accept_any_vlan ? "raised" : "cleared");
-		if (set_rx_mode) {
-			if (IS_PF(bp))
-				bnx2x_set_rx_mode_inner(bp);
-			else
-				bnx2x_vfpf_storm_rx_mode(bp);
+			BNX2X_ERR("Unable to configure VLAN %d\n", vlan->vid);
+			vlan->hw = false;
+			rc = -EINVAL;
+			continue;
 		}
 	}
-}
 
-int bnx2x_vlan_reconfigure_vid(struct bnx2x *bp)
-{
-	struct bnx2x_vlan_entry *vlan;
-
-	/* The hw forgot all entries after reload */
-	list_for_each_entry(vlan, &bp->vlan_reg, link)
-		vlan->hw = false;
-	bp->vlan_cnt = 0;
-
-	/* Don't set rx mode here. Our caller will do it. */
-	bnx2x_vlan_configure(bp, false);
-
-	return 0;
+	return rc;
 }
 
 static int bnx2x_vlan_rx_add_vid(struct net_device *dev, __be16 proto, u16 vid)
 {
 	struct bnx2x *bp = netdev_priv(dev);
 	struct bnx2x_vlan_entry *vlan;
+	bool hw = false;
+	int rc = 0;
+
+	if (!netif_running(bp->dev)) {
+		DP(NETIF_MSG_IFUP,
+		   "Ignoring VLAN configuration the interface is down\n");
+		return -EFAULT;
+	}
 
 	DP(NETIF_MSG_IFUP, "Adding VLAN %d\n", vid);
 
@@ -12953,47 +12898,93 @@ static int bnx2x_vlan_rx_add_vid(struct net_device *dev, __be16 proto, u16 vid)
 	if (!vlan)
 		return -ENOMEM;
 
+	bp->vlan_cnt++;
+	if (bp->vlan_cnt > bp->vlan_credit && !bp->accept_any_vlan) {
+		DP(NETIF_MSG_IFUP, "Accept all VLAN raised\n");
+		bp->accept_any_vlan = true;
+		if (IS_PF(bp))
+			bnx2x_set_rx_mode_inner(bp);
+		else
+			bnx2x_vfpf_storm_rx_mode(bp);
+	} else if (bp->vlan_cnt <= bp->vlan_credit) {
+		rc = __bnx2x_vlan_configure_vid(bp, vid, true);
+		hw = true;
+	}
+
 	vlan->vid = vid;
-	vlan->hw = false;
-	list_add_tail(&vlan->link, &bp->vlan_reg);
+	vlan->hw = hw;
 
-	if (netif_running(dev))
-		bnx2x_vlan_configure(bp, true);
+	if (!rc) {
+		list_add(&vlan->link, &bp->vlan_reg);
+	} else {
+		bp->vlan_cnt--;
+		kfree(vlan);
+	}
 
-	return 0;
+	DP(NETIF_MSG_IFUP, "Adding VLAN result %d\n", rc);
+
+	return rc;
 }
 
 static int bnx2x_vlan_rx_kill_vid(struct net_device *dev, __be16 proto, u16 vid)
 {
 	struct bnx2x *bp = netdev_priv(dev);
 	struct bnx2x_vlan_entry *vlan;
-	bool found = false;
 	int rc = 0;
+
+	if (!netif_running(bp->dev)) {
+		DP(NETIF_MSG_IFUP,
+		   "Ignoring VLAN configuration the interface is down\n");
+		return -EFAULT;
+	}
 
 	DP(NETIF_MSG_IFUP, "Removing VLAN %d\n", vid);
 
-	list_for_each_entry(vlan, &bp->vlan_reg, link)
-		if (vlan->vid == vid) {
-			found = true;
-			break;
-		}
+	if (!bp->vlan_cnt) {
+		BNX2X_ERR("Unable to kill VLAN %d\n", vid);
+		return -EINVAL;
+	}
 
-	if (!found) {
+	list_for_each_entry(vlan, &bp->vlan_reg, link)
+		if (vlan->vid == vid)
+			break;
+
+	if (vlan->vid != vid) {
 		BNX2X_ERR("Unable to kill VLAN %d - not found\n", vid);
 		return -EINVAL;
 	}
 
-	if (netif_running(dev) && vlan->hw) {
+	if (vlan->hw)
 		rc = __bnx2x_vlan_configure_vid(bp, vid, false);
-		DP(NETIF_MSG_IFUP, "HW deconfigured for VLAN %d\n", vid);
-		bp->vlan_cnt--;
-	}
 
 	list_del(&vlan->link);
 	kfree(vlan);
 
-	if (netif_running(dev))
-		bnx2x_vlan_configure(bp, true);
+	bp->vlan_cnt--;
+
+	if (bp->vlan_cnt <= bp->vlan_credit && bp->accept_any_vlan) {
+		/* Configure all non-configured entries */
+		list_for_each_entry(vlan, &bp->vlan_reg, link) {
+			if (vlan->hw)
+				continue;
+
+			rc = __bnx2x_vlan_configure_vid(bp, vlan->vid, true);
+			if (rc) {
+				BNX2X_ERR("Unable to config VLAN %d\n",
+					  vlan->vid);
+				continue;
+			}
+			DP(NETIF_MSG_IFUP, "HW configured for VLAN %d\n",
+			   vlan->vid);
+			vlan->hw = true;
+		}
+		DP(NETIF_MSG_IFUP, "Accept all VLAN Removed\n");
+		bp->accept_any_vlan = false;
+		if (IS_PF(bp))
+			bnx2x_set_rx_mode_inner(bp);
+		else
+			bnx2x_vfpf_storm_rx_mode(bp);
+	}
 
 	DP(NETIF_MSG_IFUP, "Removing VLAN result %d\n", rc);
 
@@ -13018,7 +13009,7 @@ static const struct net_device_ops bnx2x_netdev_ops = {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	.ndo_poll_controller	= poll_bnx2x,
 #endif
-	.ndo_setup_tc		= __bnx2x_setup_tc,
+	.ndo_setup_tc		= bnx2x_setup_tc,
 #ifdef CONFIG_BNX2X_SRIOV
 	.ndo_set_vf_mac		= bnx2x_set_vf_mac,
 	.ndo_set_vf_vlan	= bnx2x_set_vf_vlan,
@@ -15118,24 +15109,11 @@ static void bnx2x_ptp_task(struct work_struct *work)
 	u32 val_seq;
 	u64 timestamp, ns;
 	struct skb_shared_hwtstamps shhwtstamps;
-	bool bail = true;
-	int i;
 
-	/* FW may take a while to complete timestamping; try a bit and if it's
-	 * still not complete, may indicate an error state - bail out then.
-	 */
-	for (i = 0; i < 10; i++) {
-		/* Read Tx timestamp registers */
-		val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
-				 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
-		if (val_seq & 0x10000) {
-			bail = false;
-			break;
-		}
-		msleep(1 << i);
-	}
-
-	if (!bail) {
+	/* Read Tx timestamp registers */
+	val_seq = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_SEQID :
+			 NIG_REG_P0_TLLH_PTP_BUF_SEQID);
+	if (val_seq & 0x10000) {
 		/* There is a valid timestamp value */
 		timestamp = REG_RD(bp, port ? NIG_REG_P1_TLLH_PTP_BUF_TS_MSB :
 				   NIG_REG_P0_TLLH_PTP_BUF_TS_MSB);
@@ -15150,18 +15128,16 @@ static void bnx2x_ptp_task(struct work_struct *work)
 		memset(&shhwtstamps, 0, sizeof(shhwtstamps));
 		shhwtstamps.hwtstamp = ns_to_ktime(ns);
 		skb_tstamp_tx(bp->ptp_tx_skb, &shhwtstamps);
+		dev_kfree_skb_any(bp->ptp_tx_skb);
+		bp->ptp_tx_skb = NULL;
 
 		DP(BNX2X_MSG_PTP, "Tx timestamp, timestamp cycles = %llu, ns = %llu\n",
 		   timestamp, ns);
 	} else {
-		DP(BNX2X_MSG_PTP,
-		   "Tx timestamp is not recorded (register read=%u)\n",
-		   val_seq);
-		bp->eth_stats.ptp_skip_tx_ts++;
+		DP(BNX2X_MSG_PTP, "There is no valid Tx timestamp yet\n");
+		/* Reschedule to keep checking for a valid timestamp value */
+		schedule_work(&bp->ptp_task);
 	}
-
-	dev_kfree_skb_any(bp->ptp_tx_skb);
-	bp->ptp_tx_skb = NULL;
 }
 
 void bnx2x_set_rx_ts(struct bnx2x *bp, struct sk_buff *skb)

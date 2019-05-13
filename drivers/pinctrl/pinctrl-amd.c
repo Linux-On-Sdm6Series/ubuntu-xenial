@@ -388,25 +388,11 @@ static int amd_gpio_irq_set_type(struct irq_data *d, unsigned int type)
 	int ret = 0;
 	u32 pin_reg;
 	unsigned long flags;
-	bool level_trig;
-	u32 active_level;
 	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
 	struct amd_gpio *gpio_dev = to_amd_gpio(gc);
 
 	spin_lock_irqsave(&gpio_dev->lock, flags);
 	pin_reg = readl(gpio_dev->base + (d->hwirq)*4);
-
-	/*
-	 * When level_trig is set EDGE and active_level is set HIGH in BIOS
-	 * default settings, ignore incoming settings from client and use
-	 * BIOS settings to configure GPIO register.
-	 */
-	level_trig = !(pin_reg & (LEVEL_TRIGGER << LEVEL_TRIG_OFF));
-	active_level = pin_reg & (ACTIVE_LEVEL_MASK << ACTIVE_LEVEL_OFF);
-
-	if(level_trig &&
-	   ((active_level >> ACTIVE_LEVEL_OFF) == ACTIVE_HIGH))
-		type = IRQ_TYPE_EDGE_FALLING;
 
 	switch (type & IRQ_TYPE_SENSE_MASK) {
 	case IRQ_TYPE_EDGE_RISING:
@@ -782,8 +768,8 @@ static int amd_gpio_probe(struct platform_device *pdev)
 	gpio_dev->ngroups = ARRAY_SIZE(kerncz_groups);
 
 	amd_pinctrl_desc.name = dev_name(&pdev->dev);
-	gpio_dev->pctrl = devm_pinctrl_register(&pdev->dev, &amd_pinctrl_desc,
-						gpio_dev);
+	gpio_dev->pctrl = pinctrl_register(&amd_pinctrl_desc,
+					&pdev->dev, gpio_dev);
 	if (IS_ERR(gpio_dev->pctrl)) {
 		dev_err(&pdev->dev, "Couldn't register pinctrl driver\n");
 		return PTR_ERR(gpio_dev->pctrl);
@@ -791,7 +777,7 @@ static int amd_gpio_probe(struct platform_device *pdev)
 
 	ret = gpiochip_add(&gpio_dev->gc);
 	if (ret)
-		return ret;
+		goto out1;
 
 	ret = gpiochip_add_pin_range(&gpio_dev->gc, dev_name(&pdev->dev),
 				0, 0, TOTAL_NUMBER_OF_PINS);
@@ -824,6 +810,8 @@ static int amd_gpio_probe(struct platform_device *pdev)
 out2:
 	gpiochip_remove(&gpio_dev->gc);
 
+out1:
+	pinctrl_unregister(gpio_dev->pctrl);
 	return ret;
 }
 
@@ -834,6 +822,7 @@ static int amd_gpio_remove(struct platform_device *pdev)
 	gpio_dev = platform_get_drvdata(pdev);
 
 	gpiochip_remove(&gpio_dev->gc);
+	pinctrl_unregister(gpio_dev->pctrl);
 
 	return 0;
 }

@@ -80,9 +80,6 @@ config HT_IRQ
 config PCI_ATS
 	bool
 
-config PCI_ECAM
-	bool
-
 config PCI_IOV
 	bool "PCI IOV support"
 	depends on PCI
@@ -117,15 +114,22 @@ config PCI_PASID
 
 	  If unsure, say N.
 
+config PCI_MSM
+	bool "MSM PCIe Controller driver"
+	depends on ARCH_QCOM && PCI
+	select PCI_DOMAINS
+	select PCI_DOMAINS_GENERIC
+	select PCI_MSI
+	help
+	  Enables the PCIe functionality by configuring PCIe core on
+	  MSM chipset and by enabling the ARM PCI framework extension.
+	  The PCIe core is essential for communication between the host
+	  and an endpoint.
+
+	  If unsure, say N.
+
 config PCI_LABEL
 	def_bool y if (DMI || ACPI)
 	select NLS
-
-config PCI_HYPERV
-        tristate "Hyper-V PCI Frontend"
-        depends on PCI && X86 && HYPERV && PCI_MSI && PCI_MSI_IRQ_DOMAIN && X86_64
-        help
-          The PCI device frontend driver allows the kernel to import arbitrary
-          PCI devices from a PCI backend to support PCI driver domains.
 
 source "drivers/pci/host/Kconfig"

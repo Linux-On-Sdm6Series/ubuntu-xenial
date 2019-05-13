@@ -16,7 +16,7 @@
 #include "msm_bus_core.h"
 #include <linux/msm-bus.h>
 #include <linux/msm-bus-board.h>
-#include <linux/soc/qcom/smd-rpm.h>
+#include <soc/qcom/rpm-smd.h>
 
 /* Stubs for backward compatibility */
 void msm_bus_rpm_set_mt_mask()
@@ -81,28 +81,21 @@ static int msm_bus_rpm_compare_cdata(
 static int msm_bus_rpm_req(int ctx, uint32_t rsc_type, uint32_t key,
 	struct msm_bus_node_hw_info *hw_info, bool valid)
 {
-	struct qcom_msm_bus_req req = {
-			.key = key,
-		};
-	int ret = 0;
+	struct msm_rpm_request *rpm_req;
+	int ret = 0, msg_id;
 
 	if (ctx == ACTIVE_CTX)
-		ctx = QCOM_SMD_RPM_ACTIVE_STATE;
+		ctx = MSM_RPM_CTX_ACTIVE_SET;
 	else if (ctx == DUAL_CTX)
-		ctx = QCOM_SMD_RPM_SLEEP_STATE;
+		ctx = MSM_RPM_CTX_SLEEP_SET;
 
-#if 0
 	rpm_req = msm_rpm_create_request(ctx, rsc_type, hw_info->hw_id, 1);
 	if (rpm_req == NULL) {
 		MSM_BUS_WARN("RPM: Couldn't create RPM Request\n");
 		return -ENXIO;
 	}
-#endif
 
 	if (valid) {
-		req.value = hw_info->bw;
-		req.nbytes = sizeof(uint64_t);
-#if 0
 		ret = msm_rpm_add_kvp_data(rpm_req, key, (const uint8_t *)
 			&hw_info->bw, (int)(sizeof(uint64_t)));
 		if (ret) {
@@ -113,11 +106,7 @@ static int msm_bus_rpm_req(int ctx, uint32_t rsc_type, uint32_t key,
 
 		MSM_BUS_DBG("Added Key: %d, Val: %llu, size: %zu\n", key,
 			hw_info->bw, sizeof(uint64_t));
-#endif
 	} else {
-		req.value = 0;
-		req.nbytes = 0;
-#if 0
 		/* Invalidate RPM requests */
 		ret = msm_rpm_add_kvp_data(rpm_req, 0, NULL, 0);
 		if (ret) {
@@ -125,10 +114,8 @@ static int msm_bus_rpm_req(int ctx, uint32_t rsc_type, uint32_t key,
 				rsc_type);
 			goto free_rpm_request;
 		}
-#endif
 	}
 
-#if 0
 	msg_id = msm_rpm_send_request(rpm_req);
 	if (!msg_id) {
 		MSM_BUS_WARN("RPM: No message ID for req\n");
@@ -144,8 +131,6 @@ static int msm_bus_rpm_req(int ctx, uint32_t rsc_type, uint32_t key,
 
 free_rpm_request:
 	msm_rpm_free_request(rpm_req);
-#endif
-	ret = qcom_rpm_bus_send_message(ctx, rsc_type, hw_info->hw_id, &req);
 
 	return ret;
 }

@@ -44,20 +44,18 @@ static const struct cpu_operations *acpi_supported_cpu_ops[] __initconst = {
 	NULL,
 };
 
-extern struct cpu_operations __cpu_method_of_table[];
-static const struct cpu_operations *__cpu_method_of_table_sentinel
-	__used __section(__cpu_method_of_table_end);
-
 static const struct cpu_operations * __init cpu_get_ops(const char *name)
 {
-	const struct cpu_operations **start;
+	const struct cpu_operations **ops;
 
-	start = acpi_disabled ? (void *)__cpu_method_of_table : acpi_supported_cpu_ops;
+	ops = acpi_disabled ? dt_supported_cpu_ops : acpi_supported_cpu_ops;
 
-	for (; *start; start++) {
-		if (!strcmp((*start)->name, name))
-			return *start;
-	};
+	while (*ops) {
+		if (!strcmp(name, (*ops)->name))
+			return *ops;
+
+		ops++;
+	}
 
 	return NULL;
 }
@@ -86,7 +84,6 @@ static const char *__init cpu_read_enable_method(int cpu)
 				pr_err("%s: missing enable-method property\n",
 					dn->full_name);
 		}
-		of_node_put(dn);
 	} else {
 		enable_method = acpi_get_enable_method(cpu);
 		if (!enable_method) {

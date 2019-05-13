@@ -431,7 +431,7 @@ qla2x00_sysfs_write_optrom_ctl(struct file *filp, struct kobject *kobj,
 		}
 
 		ha->optrom_region_start = start;
-		ha->optrom_region_size = size;
+		ha->optrom_region_size = start + size;
 
 		ha->optrom_state = QLA_SREADING;
 		ha->optrom_buffer = vmalloc(ha->optrom_region_size);
@@ -504,7 +504,7 @@ qla2x00_sysfs_write_optrom_ctl(struct file *filp, struct kobject *kobj,
 		}
 
 		ha->optrom_region_start = start;
-		ha->optrom_region_size = size;
+		ha->optrom_region_size = start + size;
 
 		ha->optrom_state = QLA_SWRITING;
 		ha->optrom_buffer = vmalloc(ha->optrom_region_size);
@@ -760,8 +760,7 @@ qla2x00_sysfs_write_reset(struct file *filp, struct kobject *kobj,
 			break;
 		} else {
 			/* Make sure FC side is not in reset */
-			WARN_ON_ONCE(qla2x00_wait_for_hba_online(vha) !=
-				     QLA_SUCCESS);
+			qla2x00_wait_for_hba_online(vha);
 
 			/* Issue MPI reset */
 			scsi_block_requests(vha->host);
@@ -830,41 +829,6 @@ static struct bin_attribute sysfs_reset_attr = {
 	},
 	.size = 0,
 	.write = qla2x00_sysfs_write_reset,
-};
-
-static ssize_t
-qla2x00_issue_logo(struct file *filp, struct kobject *kobj,
-			struct bin_attribute *bin_attr,
-			char *buf, loff_t off, size_t count)
-{
-	struct scsi_qla_host *vha = shost_priv(dev_to_shost(container_of(kobj,
-	    struct device, kobj)));
-	int type;
-	int rval = 0;
-	port_id_t did;
-
-	type = simple_strtol(buf, NULL, 10);
-
-	did.b.domain = (type & 0x00ff0000) >> 16;
-	did.b.area = (type & 0x0000ff00) >> 8;
-	did.b.al_pa = (type & 0x000000ff);
-
-	ql_log(ql_log_info, vha, 0x70e3, "portid=%02x%02x%02x done\n",
-	    did.b.domain, did.b.area, did.b.al_pa);
-
-	ql_log(ql_log_info, vha, 0x70e4, "%s: %d\n", __func__, type);
-
-	rval = qla24xx_els_dcmd_iocb(vha, ELS_DCMD_LOGO, did);
-	return count;
-}
-
-static struct bin_attribute sysfs_issue_logo_attr = {
-	.attr = {
-		.name = "issue_logo",
-		.mode = S_IWUSR,
-	},
-	.size = 0,
-	.write = qla2x00_issue_logo,
 };
 
 static ssize_t
@@ -981,7 +945,6 @@ static struct sysfs_entry {
 	{ "vpd", &sysfs_vpd_attr, 1 },
 	{ "sfp", &sysfs_sfp_attr, 1 },
 	{ "reset", &sysfs_reset_attr, },
-	{ "issue_logo", &sysfs_issue_logo_attr, },
 	{ "xgmac_stats", &sysfs_xgmac_stats_attr, 3 },
 	{ "dcbx_tlv", &sysfs_dcbx_tlv_attr, 3 },
 	{ NULL },

@@ -77,7 +77,6 @@ struct machdep_calls *machine_id;
 EXPORT_SYMBOL(machine_id);
 
 int boot_cpuid = -1;
-int boot_hw_cpuid = -1;
 EXPORT_SYMBOL_GPL(boot_cpuid);
 
 unsigned long klimit = (unsigned long) _end;
@@ -434,7 +433,6 @@ void __init smp_setup_cpu_maps(void)
 	struct device_node *dn = NULL;
 	int cpu = 0;
 	int nthreads = 1;
-	bool boot_cpu_added = false;
 
 	DBG("smp_setup_cpu_maps()\n");
 
@@ -461,24 +459,6 @@ void __init smp_setup_cpu_maps(void)
 		}
 
 		nthreads = len / sizeof(int);
-		/*
-		 * If boot cpu hasn't been added to paca and there are only
-		 * last nthreads slots available in paca array then wait
-		 * for boot cpu to show up.
-		 */
-		if (!boot_cpu_added && (cpu + nthreads) >= nr_cpu_ids) {
-			int found = 0;
-
-			DBG("Holding last nthreads paca slots for boot cpu\n");
-			for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
-				if (boot_hw_cpuid == be32_to_cpu(intserv[j])) {
-					found = 1;
-					break;
-				}
-			}
-			if (!found)
-				continue;
-		}
 
 		for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
 			bool avail;
@@ -494,11 +474,6 @@ void __init smp_setup_cpu_maps(void)
 			set_cpu_present(cpu, avail);
 			set_hard_smp_processor_id(cpu, be32_to_cpu(intserv[j]));
 			set_cpu_possible(cpu, true);
-			if (boot_hw_cpuid == be32_to_cpu(intserv[j])) {
-				DBG("Boot cpu %d (hard id %d) added to paca\n",
-				    cpu, be32_to_cpu(intserv[j]));
-				boot_cpu_added = true;
-			}
 			cpu++;
 		}
 	}
@@ -676,6 +651,28 @@ int check_legacy_ioport(unsigned long base_port)
 	return ret;
 }
 EXPORT_SYMBOL(check_legacy_ioport);
+
+static int ppc_panic_event(struct notifier_block *this,
+                             unsigned long event, void *ptr)
+{
+	/*
+	 * If firmware-assisted dump has been registered then trigger
+	 * firmware-assisted dump and let firmware handle everything else.
+	 */
+	crash_fadump(NULL, ptr);
+	ppc_md.panic(ptr);  /* May not return */
+	return NOTIFY_DONE;
+}
+
+static struct notifier_block ppc_panic_block = {
+	.notifier_call = ppc_panic_event,
+	.priority = INT_MIN /* may not return; must be done last */
+};
+
+void __init setup_panic(void)
+{
+	atomic_notifier_chain_register(&panic_notifier_list, &ppc_panic_block);
+}
 
 #ifdef CONFIG_CHECK_CACHE_COHERENCY
 /*

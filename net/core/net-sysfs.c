@@ -931,10 +931,6 @@ net_rx_queue_update_kobjects(struct net_device *dev, int old_num, int new_num)
 	}
 
 	while (--i >= new_num) {
-		struct kobject *kobj = &dev->_rx[i].kobj;
-
-		if (!atomic_read(&dev_net(dev)->count))
-			kobj->uevent_suppress = 1;
 		if (dev->sysfs_rx_queue_group)
 			sysfs_remove_group(&dev->_rx[i].kobj,
 					   dev->sysfs_rx_queue_group);
@@ -1325,8 +1321,6 @@ netdev_queue_update_kobjects(struct net_device *dev, int old_num, int new_num)
 	while (--i >= new_num) {
 		struct netdev_queue *queue = dev->_tx + i;
 
-		if (!atomic_read(&dev_net(dev)->count))
-			queue->kobj.uevent_suppress = 1;
 #ifdef CONFIG_BQL
 		sysfs_remove_group(&queue->kobj, &dql_group);
 #endif
@@ -1367,9 +1361,6 @@ static int register_queue_kobjects(struct net_device *dev)
 error:
 	netdev_queue_update_kobjects(dev, txq, 0);
 	net_rx_queue_update_kobjects(dev, rxq, 0);
-#ifdef CONFIG_SYSFS
-	kset_unregister(dev->queues_kset);
-#endif
 	return error;
 }
 
@@ -1514,9 +1505,6 @@ EXPORT_SYMBOL(of_find_net_device_by_node);
 void netdev_unregister_kobject(struct net_device *ndev)
 {
 	struct device *dev = &(ndev->dev);
-
-	if (!atomic_read(&dev_net(ndev)->count))
-		dev_set_uevent_suppress(dev, 1);
 
 	kobject_get(&dev->kobj);
 

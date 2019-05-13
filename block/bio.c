@@ -31,6 +31,8 @@
 
 #include <trace/events/block.h>
 
+#include "blk.h"
+
 /*
  * Test patch to inline a certain number of bi_io_vec's inside the bio
  * itself, to shrink a bio data allocation from two mempool calls to one
@@ -590,6 +592,7 @@ void __bio_clone_fast(struct bio *bio, struct bio *bio_src)
 	bio->bi_rw = bio_src->bi_rw;
 	bio->bi_iter = bio_src->bi_iter;
 	bio->bi_io_vec = bio_src->bi_io_vec;
+	bio->bi_dio_inode = bio_src->bi_dio_inode;
 
 	bio_clone_blkcg_association(bio, bio_src);
 }
@@ -1216,11 +1219,8 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 			}
 		}
 
-		if (bio_add_pc_page(q, bio, page, bytes, offset) < bytes) {
-			if (!map_data)
-				__free_page(page);
+		if (bio_add_pc_page(q, bio, page, bytes, offset) < bytes)
 			break;
-		}
 
 		len -= bytes;
 		offset = 0;
@@ -1384,7 +1384,7 @@ struct bio *bio_map_user_iov(struct request_queue *q,
 
  out_unmap:
 	bio_for_each_segment_all(bvec, bio, j) {
-		page_cache_release(bvec->bv_page);
+		put_page(bvec->bv_page);
 	}
  out:
 	kfree(pages);
@@ -1785,8 +1785,10 @@ void bio_endio(struct bio *bio)
 			bio_put(bio);
 			bio = parent;
 		} else {
-			if (bio->bi_end_io)
+			if (bio->bi_end_io) {
+				blk_update_perf_stats(bio);
 				bio->bi_end_io(bio);
+			}
 			bio = NULL;
 		}
 	}

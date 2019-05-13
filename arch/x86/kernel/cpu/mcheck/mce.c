@@ -138,8 +138,6 @@ void mce_setup(struct mce *m)
 	m->socketid = cpu_data(m->extcpu).phys_proc_id;
 	m->apicid = cpu_data(m->extcpu).initial_apicid;
 	rdmsrl(MSR_IA32_MCG_CAP, m->mcgcap);
-
-	m->microcode = boot_cpu_data.microcode;
 }
 
 DEFINE_PER_CPU(struct mce, injectm);
@@ -260,7 +258,7 @@ static void print_mce(struct mce *m)
 	 */
 	pr_emerg(HW_ERR "PROCESSOR %u:%x TIME %llu SOCKET %u APIC %x microcode %x\n",
 		m->cpuvendor, m->cpuid, m->time, m->socketid, m->apicid,
-		m->microcode);
+		cpu_data(m->extcpu).microcode);
 
 	/*
 	 * Print out human-readable details about the MCE error,
@@ -672,7 +670,6 @@ static int mce_no_way_out(struct mce *m, char **msg, unsigned long *validp,
 		}
 
 		if (mce_severity(m, mca_cfg.tolerant, &tmp, true) >= MCE_PANIC_SEVERITY) {
-			m->bank = i;
 			*msg = tmp;
 			ret = 1;
 		}
@@ -1536,10 +1533,11 @@ static int __mcheck_cpu_apply_quirks(struct cpuinfo_x86 *c)
 			mce_flags.overflow_recov = 1;
 
 		/*
-		 * Turn off MC4_MISC thresholding banks on all models since
+		 * Turn off MC4_MISC thresholding banks on those models since
 		 * they're not supported there.
 		 */
-		if (c->x86 == 0x15) {
+		if (c->x86 == 0x15 &&
+		    (c->x86_model >= 0x10 && c->x86_model <= 0x1f)) {
 			int i;
 			u64 hwcr;
 			bool need_toggle;
@@ -1699,9 +1697,6 @@ dotraplinkage void do_mce(struct pt_regs *regs, long error_code)
 	machine_check_vector(regs, error_code);
 }
 
-static struct notifier_block mce_cpu_notifier;
-static bool mce_cpu_notifier_registered = false;
-
 /*
  * Called for each booted CPU to set up machine checks.
  * Must be called with preempt off:
@@ -1732,18 +1727,6 @@ void mcheck_cpu_init(struct cpuinfo_x86 *c)
 
 	__mcheck_cpu_init_generic();
 	__mcheck_cpu_init_vendor(c);
-
-	if (!mce_cpu_notifier_registered) {
-		/*
-		 * Register the CPU hotplug notifier early (and it will
-		 * not be unregistered (as before) to not leave timers
-		 * undeleted. This function is called with required locks
-		 * being hold.
-		 */
-		__register_hotcpu_notifier(&mce_cpu_notifier);
-		mce_cpu_notifier_registered = true;
-	}
-
 	__mcheck_cpu_init_timer();
 }
 
@@ -2349,7 +2332,6 @@ static struct device_attribute *mce_device_attrs[] = {
 	NULL
 };
 
-static bool mce_device_initdone = false;
 static cpumask_var_t mce_device_initialized;
 
 static void mce_device_release(struct device *dev)
@@ -2466,16 +2448,14 @@ mce_cpu_callback(struct notifier_block *nfb, unsigned long action, void *hcpu)
 
 	switch (action & ~CPU_TASKS_FROZEN) {
 	case CPU_ONLINE:
-		if (mce_device_initdone)
-			mce_device_create(cpu);
+		mce_device_create(cpu);
 		if (threshold_cpu_callback)
 			threshold_cpu_callback(action, cpu);
 		break;
 	case CPU_DEAD:
 		if (threshold_cpu_callback)
 			threshold_cpu_callback(action, cpu);
-		if (mce_device_initdone)
-			mce_device_remove(cpu);
+		mce_device_remove(cpu);
 		mce_intel_hcpu_update(cpu);
 
 		/* intentionally ignoring frozen here */
@@ -2538,15 +2518,23 @@ static __init int mcheck_init_device(void)
 	if (err)
 		goto err_out_mem;
 
-	cpu_maps_update_begin();
+	cpu_notifier_register_begin();
 	for_each_online_cpu(i) {
 		err = mce_device_create(i);
 		if (err) {
-			cpu_maps_update_done();
+			/*
+			 * Register notifier anyway (and do not unreg it) so
+			 * that we don't leave undeleted timers, see notifier
+			 * callback above.
+			 */
+			__register_hotcpu_notifier(&mce_cpu_notifier);
+			cpu_notifier_register_done();
 			goto err_device_create;
 		}
 	}
-	cpu_maps_update_done();
+
+	__register_hotcpu_notifier(&mce_cpu_notifier);
+	cpu_notifier_register_done();
 
 	register_syscore_ops(&mce_syscore_ops);
 
@@ -2554,8 +2542,6 @@ static __init int mcheck_init_device(void)
 	err = misc_register(&mce_chrdev_device);
 	if (err)
 		goto err_register;
-
-	mce_device_initdone = true;
 
 	return 0;
 

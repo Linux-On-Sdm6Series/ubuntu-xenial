@@ -56,6 +56,7 @@ parameter is applicable:
 	BLACKFIN Blackfin architecture is enabled.
 	CLK	Common clock infrastructure is enabled.
 	CMA	Contiguous Memory Area support is enabled.
+	DM	Device mapper support is enabled.
 	DRM	Direct Rendering Management support is enabled.
 	DYNAMIC_DEBUG Build in debug messages and enable them at runtime
 	EDD	BIOS Enhanced Disk Drive Services (EDD) is enabled
@@ -192,12 +193,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			If set to vendor, prefer vendor specific driver
 			(e.g. thinkpad_acpi, sony_acpi, etc.) instead
 			of the ACPI video.ko driver.
-
-	acpi_force_32bit_fadt_addr
-			force FADT to use 32 bit addresses rather than the
-			64 bit X_* addresses. Some firmware have broken 64
-			bit addresses for force ACPI ignore these and use
-			the older legacy 32 bit addresss.
 
 	acpica_no_return_repair [HW, ACPI]
 			Disable AML predefined validation mechanism
@@ -554,6 +549,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			embedded devices based on command line input.
 			See Documentation/block/cmdline-partition.txt
 
+	boot_cpus=	[SMP]
+			Rather than attempting to online all possible CPUs at
+			boot time, only online the specified set of CPUs.
+
 	boot_delay=	Milliseconds to delay each printk during boot.
 			Values larger than 10 seconds (10000) are changed to
 			no delay (0).
@@ -751,14 +750,16 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			seconds. Defaults to 10*60 = 10mins. A value of 0
 			disables the blank timer.
 
+	core_ctl_disable_cpumask= [SMP]
+			Exempt the CPUs from being managed by core_ctl.
+			core_ctl operates on a cluster basis. So all the
+			CPUs in a given cluster must be specified to disable
+			core_ctl for that cluster.
+
 	coredump_filter=
 			[KNL] Change the default value for
 			/proc/<pid>/coredump_filter.
 			See also Documentation/filesystems/proc.txt.
-
-	cpufreq_driver= [X86] Allow only the named cpu frequency scaling driver
-			to register. Example: cpufreq_driver=powernow-k8
-			Format: { none | STRING }
 
 	cpuidle.off=1	[CPU_IDLE]
 			disable the cpuidle sub-system
@@ -925,6 +926,11 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	dis_ucode_ldr	[X86] Disable the microcode loader.
 
+	dm=		[DM] Allows early creation of a device-mapper device.
+			See Documentation/device-mapper/boot.txt.
+
+	dmasound=	[HW,OSS] Sound subsystem buff
+
 	dma_debug=off	If the kernel is compiled with DMA_API_DEBUG support,
 			this option disables the debugging code at boot.
 
@@ -971,6 +977,11 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			See Documentation/x86/intel_mpx.txt for more
 			information about the feature.
 
+	eagerfpu=	[X86]
+			on	enable eager fpu restore
+			off	disable eager fpu restore
+			auto	selects the default scheme, which automatically
+				enables eagerfpu restore for xsaveopt.
 
 	module.async_probe [KNL]
 			Enable asynchronous probe on this module.
@@ -1452,6 +1463,41 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			In such case C2/C3 won't be used again.
 			idle=nomwait: Disable mwait for CPU C-states
 
+	ieee754=	[MIPS] Select IEEE Std 754 conformance mode
+			Format: { strict | legacy | 2008 | relaxed }
+			Default: strict
+
+			Choose which programs will be accepted for execution
+			based on the IEEE 754 NaN encoding(s) supported by
+			the FPU and the NaN encoding requested with the value
+			of an ELF file header flag individually set by each
+			binary.  Hardware implementations are permitted to
+			support either or both of the legacy and the 2008 NaN
+			encoding mode.
+
+			Available settings are as follows:
+			strict	accept binaries that request a NaN encoding
+				supported by the FPU
+			legacy	only accept legacy-NaN binaries, if supported
+				by the FPU
+			2008	only accept 2008-NaN binaries, if supported
+				by the FPU
+			relaxed	accept any binaries regardless of whether
+				supported by the FPU
+
+			The FPU emulator is always able to support both NaN
+			encodings, so if no FPU hardware is present or it has
+			been disabled with 'nofpu', then the settings of
+			'legacy' and '2008' strap the emulator accordingly,
+			'relaxed' straps the emulator for both legacy-NaN and
+			2008-NaN, whereas 'strict' enables legacy-NaN only on
+			legacy processors and both NaN encodings on MIPS32 or
+			MIPS64 CPUs.
+
+			The setting for ABS.fmt/NEG.fmt instruction execution
+			mode generally follows that for the NaN encoding,
+			except where unsupported by hardware.
+
 	ignore_loglevel	[KNL]
 			Ignore loglevel setting - this will print /all/
 			kernel messages to the console. Useful for debugging.
@@ -1775,23 +1821,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			KVM MMU at runtime.
 			Default is 0 (off)
 
-	kvm.nx_huge_pages=
-			[KVM] Controls the sw workaround for bug
-			X86_BUG_ITLB_MULTIHIT.
-			force	: Always deploy workaround.
-			off	: Default. Never deploy workaround.
-			auto	: Deploy workaround based on presence of
-				  X86_BUG_ITLB_MULTIHIT.
-
-			If the sw workaround is enabled for the host, guests
-			need not enable it for nested guests.
-
-	kvm.nx_huge_pages_recovery_ratio=
-			[KVM] Controls how many 4KiB pages are periodically zapped
-			back to huge pages.  0 disables the recovery, otherwise if
-			the value is N KVM will zap 1/Nth of the 4KiB pages every
-			minute.  The default is 60.
-
 	kvm-amd.nested=	[KVM,AMD] Allow nested virtualization in KVM/SVM.
 			Default is 1 (enabled)
 
@@ -1820,83 +1849,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			(virtualized real and unpaged mode) on capable
 			Intel chips. Default is 1 (enabled)
 
-	kvm-intel.vmentry_l1d_flush=[KVM,Intel] Mitigation for L1 Terminal Fault
-			CVE-2018-3620.
-
-			Valid arguments: never, cond, always
-
-			always: L1D cache flush on every VMENTER.
-			cond:	Flush L1D on VMENTER only when the code between
-				VMEXIT and VMENTER can leak host memory.
-			never:	Disables the mitigation
-
-			Default is cond (do L1 cache flush in specific instances)
-
 	kvm-intel.vpid=	[KVM,Intel] Disable Virtual Processor Identification
 			feature (tagged TLBs) on capable Intel chips.
 			Default is 1 (enabled)
-
-	l1tf=           [X86] Control mitigation of the L1TF vulnerability on
-			      affected CPUs
-
-			The kernel PTE inversion protection is unconditionally
-			enabled and cannot be disabled.
-
-			full
-				Provides all available mitigations for the
-				L1TF vulnerability. Disables SMT and
-				enables all mitigations in the
-				hypervisors, i.e. unconditional L1D flush.
-
-				SMT control and L1D flush control via the
-				sysfs interface is still possible after
-				boot.  Hypervisors will issue a warning
-				when the first VM is started in a
-				potentially insecure configuration,
-				i.e. SMT enabled or L1D flush disabled.
-
-			full,force
-				Same as 'full', but disables SMT and L1D
-				flush runtime control. Implies the
-				'nosmt=force' command line option.
-				(i.e. sysfs control of SMT is disabled.)
-
-			flush
-				Leaves SMT enabled and enables the default
-				hypervisor mitigation, i.e. conditional
-				L1D flush.
-
-				SMT control and L1D flush control via the
-				sysfs interface is still possible after
-				boot.  Hypervisors will issue a warning
-				when the first VM is started in a
-				potentially insecure configuration,
-				i.e. SMT enabled or L1D flush disabled.
-
-			flush,nosmt
-
-				Disables SMT and enables the default
-				hypervisor mitigation.
-
-				SMT control and L1D flush control via the
-				sysfs interface is still possible after
-				boot.  Hypervisors will issue a warning
-				when the first VM is started in a
-				potentially insecure configuration,
-				i.e. SMT enabled or L1D flush disabled.
-
-			flush,nowarn
-				Same as 'flush', but hypervisors will not
-				warn when a VM is started in a potentially
-				insecure configuration.
-
-			off
-				Disables hypervisor mitigations and doesn't
-				emit any warnings.
-
-			Default is 'flush'.
-
-			For details see: Documentation/admin-guide/hw-vuln/l1tf.rst
 
 	l2cr=		[PPC]
 
@@ -2136,38 +2091,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Format: <first>,<last>
 			Specifies range of consoles to be captured by the MDA.
 
-	mds=		[X86,INTEL]
-			Control mitigation for the Micro-architectural Data
-			Sampling (MDS) vulnerability.
-
-			Certain CPUs are vulnerable to an exploit against CPU
-			internal buffers which can forward information to a
-			disclosure gadget under certain conditions.
-
-			In vulnerable processors, the speculatively
-			forwarded data can be used in a cache side channel
-			attack, to access data to which the attacker does
-			not have direct access.
-
-			This parameter controls the MDS mitigation. The
-			options are:
-
-			full       - Enable MDS mitigation on vulnerable CPUs
-			full,nosmt - Enable MDS mitigation and disable
-				     SMT on vulnerable CPUs
-			off        - Unconditionally disable MDS mitigation
-
-			On TAA-affected machines, mds=off can be prevented by
-			an active TAA mitigation as both vulnerabilities are
-			mitigated with the same mechanism so in order to disable
-			this mitigation, you need to specify tsx_async_abort=off
-			too.
-
-			Not specifying this option is equivalent to
-			mds=full.
-
-			For details see: Documentation/admin-guide/hw-vuln/mds.rst
-
 	mem=nn[KMG]	[KNL,BOOT] Force usage of a specific amount of memory
 			Amount of memory to be used when the kernel is not able
 			to see the whole system memory or for test.
@@ -2281,48 +2204,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			kernel as of 2.6.30, a preliminary port can be found
 			in the "bleeding edge" mini2440 support kernel at
 			http://repo.or.cz/w/linux-2.6/mini2440.git
-
-	mitigations=
-			[X86,PPC,S390] Control optional mitigations for CPU
-			vulnerabilities.  This is a set of curated,
-			arch-independent options, each of which is an
-			aggregation of existing arch-specific options.
-
-			off
-				Disable all optional CPU mitigations.  This
-				improves system performance, but it may also
-				expose users to several CPU vulnerabilities.
-				Equivalent to: nopti [X86,PPC]
-					       nobp=0 [S390]
-					       nospectre_v1 [X86,PPC]
-					       nospectre_v2 [X86,PPC,S390]
-					       spectre_v2_user=off [X86]
-					       spec_store_bypass_disable=off [X86,PPC]
-					       l1tf=off [X86]
-					       mds=off [X86]
-					       tsx_async_abort=off [X86]
-					       kvm.nx_huge_pages=off [X86].
-
-				Exceptions:
-					       This does not have any effect on
-					       kvm.nx_huge_pages when
-					       kvm.nx_huge_pages=force.
-
-			auto (default)
-				Mitigate all CPU vulnerabilities, but leave SMT
-				enabled, even if it's vulnerable.  This is for
-				users who don't want to be surprised by SMT
-				getting disabled across kernel upgrades, or who
-				have other ways of avoiding SMT-based attacks.
-				Equivalent to: (default behavior)
-
-			auto,nosmt
-				Mitigate all CPU vulnerabilities, disabling SMT
-				if needed.  This is for users who always want to
-				be fully mitigated, even if it means losing SMT.
-				Equivalent to: l1tf=flush,nosmt [X86]
-					       mds=full,nosmt [X86]
-					       tsx_async_abort=full,nosmt [X86]
 
 	mminit_loglevel=
 			[KNL] When CONFIG_DEBUG_MEMORY_INIT is set, this
@@ -2602,15 +2483,24 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			noexec=on: enable non-executable mappings (default)
 			noexec=off: disable non-executable mappings
 
-	noibrs		[X86]
-			Don't use indirect branch restricted speculation (IBRS)
-			feature when running in secure environment,
-			to avoid performance overhead.
-
-	noibpb		[X86]
-			Don't use indirect branch prediction barrier (IBPB)
-			feature when running in secure environment,
-			to avoid performance overhead.
+	noexec		[MIPS]
+			Force indicating stack and heap as non-executable or
+			executable regardless of PT_GNU_STACK entry or CPU XI
+			(execute inhibit) support. Valid valuess are: on, off.
+			noexec=on:  force indicating non-executable
+				    stack and heap
+			noexec=off: force indicating executable
+				    stack and heap
+			If this parameter is omitted, stack and heap will be
+			indicated non-executable or executable as they are
+			actually set up, which depends on PT_GNU_STACK entry
+			and possibly other factors (for instance, CPU XI
+			support).
+			NOTE: Using noexec=on on a system without CPU XI
+			support	is not recommended since there is no actual
+			HW support that provide non-executable stack/heap.
+			Use only for debugging purposes and not in a
+			production environment.
 
 	nosmap		[X86]
 			Disable SMAP (Supervisor Mode Access Prevention)
@@ -2635,15 +2525,7 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	nohugeiomap	[KNL,x86] Disable kernel huge I/O mappings.
 
-	nosmt		[KNL,x86] Disable symmetric multithreading (SMT).
-			nosmt=force: Force disable SMT, cannot be undone
-				     via the sysfs control file.
-
-	nospectre_v1	[X86,PPC] Disable mitigations for Spectre Variant 1
-			(bounds check bypass). With this option data leaks are
-			possible in the system.
-
-	nospectre_v2	[X86,PPC_FSL_BOOK3E] Disable all mitigations for the Spectre variant 2
+	nospectre_v2	[X86] Disable all mitigations for the Spectre variant 2
 			(indirect branch prediction) vulnerability. System may
 			allow data leaks with this option, which is equivalent
 			to spectre_v2=off.
@@ -2877,6 +2759,11 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			we can turn it on.
 			on: enable the feature
 
+	page_poison=	[KNL] Boot-time parameter changing the state of
+			poisoning on the buddy allocator.
+			off: turn off poisoning
+			on: turn on poisoning
+
 	panic=		[KNL] Kernel behaviour on panic: delay <timeout>
 			timeout > 0: seconds before rebooting
 			timeout = 0: wait forever
@@ -2962,12 +2849,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 		nomsi		[MSI] If the PCI_MSI kernel config parameter is
 				enabled, this kernel boot option can be used to
 				disable the use of MSI interrupts system-wide.
-		clearmsi	[X86] Clears MSI/MSI-X enable bits early in boot
-				time in order to avoid issues like adapters
-				screaming irqs and preventing boot progress.
-				Also, it enforces the PCI Local Bus spec
-				rule that those bits should be 0 in system reset
-				events (useful for kexec/kdump cases).
 		noioapicquirk	[APIC] Disable all boot interrupt quirks.
 				Safety option to keep boot IRQs enabled. This
 				should never be necessary.
@@ -3561,13 +3442,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Run specified binary instead of /init from the ramdisk,
 			used for early userspace startup. See initrd.
 
-	rdrand=		[X86]
-			force - Override the decision by the kernel to hide the
-				advertisement of RDRAND support (this affects
-				certain AMD processors because of buggy BIOS
-				support, specifically around the suspend/resume
-				path).
-
 	reboot=		[KNL]
 			Format (x86 or x86_64):
 				[w[arm] | c[old] | h[ard] | s[oft] | g[pio]] \
@@ -3648,6 +3522,10 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			Set number of hash buckets for route cache
 
 	ro		[KNL] Mount root device read-only on boot
+
+	rodata=		[KNL]
+		on	Mark read-only kernel memory as read-only (default).
+		off	Leave read-only kernel memory writable for debugging.
 
 	root=		[KNL] Root filesystem
 			See name_to_dev_t comment in init/do_mounts.c.
@@ -3806,13 +3684,9 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 	spectre_v2=	[X86] Control mitigation of Spectre variant 2
 			(indirect branch speculation) vulnerability.
-			The default operation protects the kernel from
-			user space attacks.
 
-			on   - unconditionally enable, implies
-			       spectre_v2_user=on
-			off  - unconditionally disable, implies
-			       spectre_v2_user=off
+			on   - unconditionally enable
+			off  - unconditionally disable
 			auto - kernel detects whether your CPU model is
 			       vulnerable
 
@@ -3822,12 +3696,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			CONFIG_RETPOLINE configuration option, and the
 			compiler with which the kernel was built.
 
-			Selecting 'on' will also enable the mitigation
-			against user space to user space task attacks.
-
-			Selecting 'off' will disable both the kernel and
-			the user space protections.
-
 			Specific mitigations can also be selected manually:
 
 			retpoline	  - replace indirect branches
@@ -3836,48 +3704,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 
 			Not specifying this option is equivalent to
 			spectre_v2=auto.
-
-	spectre_v2_user=
-			[X86] Control mitigation of Spectre variant 2
-		        (indirect branch speculation) vulnerability between
-		        user space tasks
-
-			on	- Unconditionally enable mitigations. Is
-				  enforced by spectre_v2=on
-
-			off     - Unconditionally disable mitigations. Is
-				  enforced by spectre_v2=off
-
-			prctl   - Indirect branch speculation is enabled,
-				  but mitigation can be enabled via prctl
-				  per thread.  The mitigation control state
-				  is inherited on fork.
-
-			prctl,ibpb
-				- Like "prctl" above, but only STIBP is
-				  controlled per thread. IBPB is issued
-				  always when switching between different user
-				  space processes.
-
-			seccomp
-				- Same as "prctl" above, but all seccomp
-				  threads will enable the mitigation unless
-				  they explicitly opt out.
-
-			seccomp,ibpb
-				- Like "seccomp" above, but only STIBP is
-				  controlled per thread. IBPB is issued
-				  always when switching between different
-				  user space processes.
-
-			auto    - Kernel selects the mitigation depending on
-				  the available CPU features and vulnerability.
-
-			Default mitigation:
-			If CONFIG_SECCOMP=y then "seccomp", otherwise "prctl"
-
-			Not specifying this option is equivalent to
-			spectre_v2_user=auto.
 
 	spec_store_bypass_disable=
 			[HW] Control Speculative Store Bypass (SSB) Disable mitigation
@@ -4198,76 +4024,6 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			platforms where RDTSC is slow and this accounting
 			can add overhead.
 
-	tsx=		[X86] Control Transactional Synchronization
-			Extensions (TSX) feature in Intel processors that
-			support TSX control.
-
-			This parameter controls the TSX feature. The options are:
-
-			on	- Enable TSX on the system. Although there are
-				mitigations for all known security vulnerabilities,
-				TSX has been known to be an accelerator for
-				several previous speculation-related CVEs, and
-				so there may be unknown	security risks associated
-				with leaving it enabled.
-
-			off	- Disable TSX on the system. (Note that this
-				option takes effect only on newer CPUs which are
-				not vulnerable to MDS, i.e., have
-				MSR_IA32_ARCH_CAPABILITIES.MDS_NO=1 and which get
-				the new IA32_TSX_CTRL MSR through a microcode
-				update. This new MSR allows for the reliable
-				deactivation of the TSX functionality.)
-
-			auto	- Disable TSX if X86_BUG_TAA is present,
-				  otherwise enable TSX on the system.
-
-			Not specifying this option is equivalent to tsx=off.
-
-			See Documentation/admin-guide/hw-vuln/tsx_async_abort.rst
-			for more details.
-
-	tsx_async_abort= [X86,INTEL] Control mitigation for the TSX Async
-			Abort (TAA) vulnerability.
-
-			Similar to Micro-architectural Data Sampling (MDS)
-			certain CPUs that support Transactional
-			Synchronization Extensions (TSX) are vulnerable to an
-			exploit against CPU internal buffers which can forward
-			information to a disclosure gadget under certain
-			conditions.
-
-			In vulnerable processors, the speculatively forwarded
-			data can be used in a cache side channel attack, to
-			access data to which the attacker does not have direct
-			access.
-
-			This parameter controls the TAA mitigation.  The
-			options are:
-
-			full       - Enable TAA mitigation on vulnerable CPUs
-				     if TSX is enabled.
-
-			full,nosmt - Enable TAA mitigation and disable SMT on
-				     vulnerable CPUs. If TSX is disabled, SMT
-				     is not disabled because CPU is not
-				     vulnerable to cross-thread TAA attacks.
-			off        - Unconditionally disable TAA mitigation
-
-			On MDS-affected machines, tsx_async_abort=off can be
-			prevented by an active MDS mitigation as both vulnerabilities
-			are mitigated with the same mechanism so in order to disable
-			this mitigation, you need to specify mds=off too.
-
-			Not specifying this option is equivalent to
-			tsx_async_abort=full.  On CPUs which are MDS affected
-			and deploy MDS mitigation, TAA mitigation is not
-			required and doesn't provide any additional
-			mitigation.
-
-			For details see:
-			Documentation/admin-guide/hw-vuln/tsx_async_abort.rst
-
 	turbografx.map[2|3]=	[HW,JOY]
 			TurboGraFX parallel port interface
 			Format:
@@ -4549,6 +4305,15 @@ bytes respectively. Such letter suffixes can also be entirely omitted.
 			see Documentation/watchdog/watchdog-parameters.txt
 			or other driver-specific files in the
 			Documentation/watchdog/ directory.
+
+	workqueue.watchdog_thresh=
+			If CONFIG_WQ_WATCHDOG is configured, workqueue can
+			warn stall conditions and dump internal state to
+			help debugging.  0 disables workqueue stall
+			detection; otherwise, it's the stall threshold
+			duration in seconds.  The default value is 30 and
+			it can be updated at runtime by writing to the
+			corresponding sysfs file.
 
 	workqueue.disable_numa
 			By default, all work items queued to unbound

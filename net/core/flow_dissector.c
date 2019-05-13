@@ -6,6 +6,7 @@
 #include <linux/if_vlan.h>
 #include <net/ip.h>
 #include <net/ipv6.h>
+#include <net/rmnet_config.h>
 #include <linux/igmp.h>
 #include <linux/icmp.h>
 #include <linux/sctp.h>
@@ -18,6 +19,7 @@
 #include <linux/mpls.h>
 #include <net/flow_dissector.h>
 #include <scsi/fc/fc_fcoe.h>
+#include <linux/net_map.h>
 
 static bool dissector_uses_key(const struct flow_dissector *flow_dissector,
 			       enum flow_dissector_key_id key_id)
@@ -338,6 +340,40 @@ mpls:
 		goto out_good;
 	}
 
+	case __constant_htons(ETH_P_MAP): {
+		struct {
+			struct rmnet_map_header_s map;
+			uint8_t proto;
+		} *map, _map;
+		unsigned int maplen;
+
+		map = skb_header_pointer(skb, nhoff, sizeof(_map), &_map);
+		if (!map)
+			return false;
+
+		/* Is MAP command? */
+		if (map->map.cd_bit)
+			return false;
+
+		/* Is aggregated frame? */
+		maplen = ntohs(map->map.pkt_len);
+		maplen += map->map.pad_len;
+		maplen += sizeof(struct rmnet_map_header_s);
+		if (maplen < skb->len)
+			return false;
+
+		nhoff += sizeof(struct rmnet_map_header_s);
+		switch (map->proto & RMNET_IP_VER_MASK) {
+		case RMNET_IPV4:
+			proto = htons(ETH_P_IP);
+			goto ip;
+		case RMNET_IPV6:
+			proto = htons(ETH_P_IPV6);
+			goto ipv6;
+		default:
+			return false;
+		}
+	}
 	case htons(ETH_P_FCOE):
 		key_control->thoff = (u16)(nhoff + FCOE_HEADER_LEN);
 		/* fall through */
@@ -480,8 +516,8 @@ ip_proto_again:
 		break;
 	}
 
-	if (dissector_uses_key(flow_dissector, FLOW_DISSECTOR_KEY_PORTS) &&
-	    !(key_control->flags & FLOW_DIS_IS_FRAGMENT)) {
+	if (dissector_uses_key(flow_dissector,
+			       FLOW_DISSECTOR_KEY_PORTS)) {
 		key_ports = skb_flow_dissector_target(flow_dissector,
 						      FLOW_DISSECTOR_KEY_PORTS,
 						      target_container);
@@ -505,34 +541,45 @@ out_bad:
 }
 EXPORT_SYMBOL(__skb_flow_dissect);
 
-static siphash_key_t hashrnd __read_mostly;
+static u32 hashrnd __read_mostly;
 static __always_inline void __flow_hash_secret_init(void)
 {
 	net_get_random_once(&hashrnd, sizeof(hashrnd));
 }
 
-static const void *flow_keys_hash_start(const struct flow_keys *flow)
+static __always_inline u32 __flow_hash_words(const u32 *words, u32 length,
+					     u32 keyval)
 {
-	BUILD_BUG_ON(FLOW_KEYS_HASH_OFFSET % SIPHASH_ALIGNMENT);
-	return &flow->FLOW_KEYS_HASH_START_FIELD;
+	return jhash2(words, length, keyval);
+}
+
+static inline const u32 *flow_keys_hash_start(const struct flow_keys *flow)
+{
+	const void *p = flow;
+
+	BUILD_BUG_ON(FLOW_KEYS_HASH_OFFSET % sizeof(u32));
+	return (const u32 *)(p + FLOW_KEYS_HASH_OFFSET);
 }
 
 static inline size_t flow_keys_hash_length(const struct flow_keys *flow)
 {
-	size_t len = offsetof(typeof(*flow), addrs) - FLOW_KEYS_HASH_OFFSET;
+	size_t diff = FLOW_KEYS_HASH_OFFSET + sizeof(flow->addrs);
+	BUILD_BUG_ON((sizeof(*flow) - FLOW_KEYS_HASH_OFFSET) % sizeof(u32));
+	BUILD_BUG_ON(offsetof(typeof(*flow), addrs) !=
+		     sizeof(*flow) - sizeof(flow->addrs));
 
 	switch (flow->control.addr_type) {
 	case FLOW_DISSECTOR_KEY_IPV4_ADDRS:
-		len += sizeof(flow->addrs.v4addrs);
+		diff -= sizeof(flow->addrs.v4addrs);
 		break;
 	case FLOW_DISSECTOR_KEY_IPV6_ADDRS:
-		len += sizeof(flow->addrs.v6addrs);
+		diff -= sizeof(flow->addrs.v6addrs);
 		break;
 	case FLOW_DISSECTOR_KEY_TIPC_ADDRS:
-		len += sizeof(flow->addrs.tipcaddrs);
+		diff -= sizeof(flow->addrs.tipcaddrs);
 		break;
 	}
-	return len;
+	return (sizeof(*flow) - diff) / sizeof(u32);
 }
 
 __be32 flow_get_u32_src(const struct flow_keys *flow)
@@ -598,15 +645,14 @@ static inline void __flow_hash_consistentify(struct flow_keys *keys)
 	}
 }
 
-static inline u32 __flow_hash_from_keys(struct flow_keys *keys,
-					const siphash_key_t *keyval)
+static inline u32 __flow_hash_from_keys(struct flow_keys *keys, u32 keyval)
 {
 	u32 hash;
 
 	__flow_hash_consistentify(keys);
 
-	hash = siphash(flow_keys_hash_start(keys),
-		       flow_keys_hash_length(keys), keyval);
+	hash = __flow_hash_words(flow_keys_hash_start(keys),
+				 flow_keys_hash_length(keys), keyval);
 	if (!hash)
 		hash = 1;
 
@@ -616,13 +662,12 @@ static inline u32 __flow_hash_from_keys(struct flow_keys *keys,
 u32 flow_hash_from_keys(struct flow_keys *keys)
 {
 	__flow_hash_secret_init();
-	return __flow_hash_from_keys(keys, &hashrnd);
+	return __flow_hash_from_keys(keys, hashrnd);
 }
 EXPORT_SYMBOL(flow_hash_from_keys);
 
 static inline u32 ___skb_get_hash(const struct sk_buff *skb,
-				  struct flow_keys *keys,
-				  const siphash_key_t *keyval)
+				  struct flow_keys *keys, u32 keyval)
 {
 	skb_flow_dissect_flow_keys(skb, keys,
 				   FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
@@ -670,7 +715,7 @@ u32 __skb_get_hash_symmetric(struct sk_buff *skb)
 			   NULL, 0, 0, 0,
 			   FLOW_DISSECTOR_F_STOP_AT_FLOW_LABEL);
 
-	return __flow_hash_from_keys(&keys, &hashrnd);
+	return __flow_hash_from_keys(&keys, hashrnd);
 }
 EXPORT_SYMBOL_GPL(__skb_get_hash_symmetric);
 
@@ -689,13 +734,12 @@ void __skb_get_hash(struct sk_buff *skb)
 
 	__flow_hash_secret_init();
 
-	__skb_set_sw_hash(skb, ___skb_get_hash(skb, &keys, &hashrnd),
+	__skb_set_sw_hash(skb, ___skb_get_hash(skb, &keys, hashrnd),
 			  flow_keys_have_l4(&keys));
 }
 EXPORT_SYMBOL(__skb_get_hash);
 
-__u32 skb_get_hash_perturb(const struct sk_buff *skb,
-			   const siphash_key_t *perturb)
+__u32 skb_get_hash_perturb(const struct sk_buff *skb, u32 perturb)
 {
 	struct flow_keys keys;
 

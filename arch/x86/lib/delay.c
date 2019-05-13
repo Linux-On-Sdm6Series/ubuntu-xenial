@@ -26,8 +26,6 @@
 # include <asm/smp.h>
 #endif
 
-#define IBRS_DISABLE_THRESHOLD	1000
-
 /* simple loop based delay: */
 static void delay_loop(unsigned long loops)
 {
@@ -107,9 +105,6 @@ static void delay_mwaitx(unsigned long __loops)
 	for (;;) {
 		delay = min_t(u64, MWAITX_MAX_LOOPS, loops);
 
-		if (delay > IBRS_DISABLE_THRESHOLD)
-			ubuntu_restrict_branch_speculation_end();
-
 		/*
 		 * Use cpu_tss as a cacheline-aligned, seldomly
 		 * accessed per-cpu variable as the monitor target.
@@ -117,14 +112,11 @@ static void delay_mwaitx(unsigned long __loops)
 		__monitorx(this_cpu_ptr(&cpu_tss), 0, 0);
 
 		/*
-		 * AMD, like Intel's MWAIT version, supports the EAX hint and
-		 * EAX=0xf0 means, do not enter any deep C-state and we use it
+		 * AMD, like Intel, supports the EAX hint and EAX=0xf
+		 * means, do not enter any deep C-state and we use it
 		 * here in delay() to minimize wakeup latency.
 		 */
 		__mwaitx(MWAITX_DISABLE_CSTATES, delay, MWAITX_ECX_TIMER_ENABLE);
-
-		if (delay > IBRS_DISABLE_THRESHOLD)
-			ubuntu_restrict_branch_speculation_start();
 
 		end = rdtsc_ordered();
 

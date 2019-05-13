@@ -208,6 +208,9 @@ struct sk_buff *__alloc_skb(unsigned int size, gfp_t gfp_mask,
 	u8 *data;
 	bool pfmemalloc;
 
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
+
 	cache = (flags & SKB_ALLOC_FCLONE)
 		? skbuff_fclone_cache : skbuff_head_cache;
 
@@ -349,22 +352,17 @@ struct sk_buff *build_skb(void *data, unsigned int frag_size)
 }
 EXPORT_SYMBOL(build_skb);
 
-#define NAPI_SKB_CACHE_SIZE	64
-
-struct napi_alloc_cache {
-	struct page_frag_cache page;
-	size_t skb_count;
-	void *skb_cache[NAPI_SKB_CACHE_SIZE];
-};
-
 static DEFINE_PER_CPU(struct page_frag_cache, netdev_alloc_cache);
-static DEFINE_PER_CPU(struct napi_alloc_cache, napi_alloc_cache);
+static DEFINE_PER_CPU(struct page_frag_cache, napi_alloc_cache);
 
 static void *__netdev_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 {
 	struct page_frag_cache *nc;
 	unsigned long flags;
 	void *data;
+
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
 
 	local_irq_save(flags);
 	nc = this_cpu_ptr(&netdev_alloc_cache);
@@ -382,23 +380,19 @@ static void *__netdev_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
  */
 void *netdev_alloc_frag(unsigned int fragsz)
 {
-	fragsz = SKB_DATA_ALIGN(fragsz);
-
 	return __netdev_alloc_frag(fragsz, GFP_ATOMIC | __GFP_COLD);
 }
 EXPORT_SYMBOL(netdev_alloc_frag);
 
 static void *__napi_alloc_frag(unsigned int fragsz, gfp_t gfp_mask)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct page_frag_cache *nc = this_cpu_ptr(&napi_alloc_cache);
 
-	return __alloc_page_frag(&nc->page, fragsz, gfp_mask);
+	return __alloc_page_frag(nc, fragsz, gfp_mask);
 }
 
 void *napi_alloc_frag(unsigned int fragsz)
 {
-	fragsz = SKB_DATA_ALIGN(fragsz);
-
 	return __napi_alloc_frag(fragsz, GFP_ATOMIC | __GFP_COLD);
 }
 EXPORT_SYMBOL(napi_alloc_frag);
@@ -416,6 +410,7 @@ EXPORT_SYMBOL(napi_alloc_frag);
  *
  *	%NULL is returned if there is no free memory.
  */
+#ifndef CONFIG_DISABLE_NET_SKB_FRAG_CACHE
 struct sk_buff *__netdev_alloc_skb(struct net_device *dev, unsigned int len,
 				   gfp_t gfp_mask)
 {
@@ -426,6 +421,9 @@ struct sk_buff *__netdev_alloc_skb(struct net_device *dev, unsigned int len,
 	void *data;
 
 	len += NET_SKB_PAD;
+
+	if (IS_ENABLED(CONFIG_FORCE_ALLOC_FROM_DMA_ZONE))
+		gfp_mask |= GFP_DMA;
 
 	if ((len > SKB_WITH_OVERHEAD(PAGE_SIZE)) ||
 	    (gfp_mask & (__GFP_DIRECT_RECLAIM | GFP_DMA))) {
@@ -470,6 +468,22 @@ skb_success:
 skb_fail:
 	return skb;
 }
+#else
+struct sk_buff *__netdev_alloc_skb(struct net_device *dev,
+				   unsigned int length, gfp_t gfp_mask)
+{
+	struct sk_buff *skb = NULL;
+
+	skb = __alloc_skb(length + NET_SKB_PAD, gfp_mask,
+			  SKB_ALLOC_RX, NUMA_NO_NODE);
+	if (likely(skb)) {
+		skb_reserve(skb, NET_SKB_PAD);
+		skb->dev = dev;
+	}
+	return skb;
+}
+#endif
+
 EXPORT_SYMBOL(__netdev_alloc_skb);
 
 /**
@@ -488,7 +502,7 @@ EXPORT_SYMBOL(__netdev_alloc_skb);
 struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 				 gfp_t gfp_mask)
 {
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
+	struct page_frag_cache *nc = this_cpu_ptr(&napi_alloc_cache);
 	struct sk_buff *skb;
 	void *data;
 
@@ -508,7 +522,7 @@ struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 	if (sk_memalloc_socks())
 		gfp_mask |= __GFP_MEMALLOC;
 
-	data = __alloc_page_frag(&nc->page, len, gfp_mask);
+	data = __alloc_page_frag(nc, len, gfp_mask);
 	if (unlikely(!data))
 		return NULL;
 
@@ -519,7 +533,7 @@ struct sk_buff *__napi_alloc_skb(struct napi_struct *napi, unsigned int len,
 	}
 
 	/* use OR instead of assignment to avoid clearing of bits in mask */
-	if (nc->page.pfmemalloc)
+	if (nc->pfmemalloc)
 		skb->pfmemalloc = 1;
 	skb->head_frag = 1;
 
@@ -760,69 +774,6 @@ void consume_skb(struct sk_buff *skb)
 	__kfree_skb(skb);
 }
 EXPORT_SYMBOL(consume_skb);
-
-void __kfree_skb_flush(void)
-{
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
-
-	/* flush skb_cache if containing objects */
-	if (nc->skb_count) {
-		kmem_cache_free_bulk(skbuff_head_cache, nc->skb_count,
-				     nc->skb_cache);
-		nc->skb_count = 0;
-	}
-}
-
-static void __kfree_skb_defer(struct sk_buff *skb)
-{
-	struct napi_alloc_cache *nc = this_cpu_ptr(&napi_alloc_cache);
-
-	/* drop skb->head and call any destructors for packet */
-	skb_release_all(skb);
-
-	/* record skb to CPU local list */
-	nc->skb_cache[nc->skb_count++] = skb;
-
-#ifdef CONFIG_SLUB
-	/* SLUB writes into objects when freeing */
-	prefetchw(skb);
-#endif
-
-	/* flush skb_cache if it is filled */
-	if (unlikely(nc->skb_count == NAPI_SKB_CACHE_SIZE)) {
-		kmem_cache_free_bulk(skbuff_head_cache, NAPI_SKB_CACHE_SIZE,
-				     nc->skb_cache);
-		nc->skb_count = 0;
-	}
-}
-
-void napi_consume_skb(struct sk_buff *skb, int budget)
-{
-	if (unlikely(!skb))
-		return;
-
-	/* if budget is 0 assume netpoll w/ IRQs disabled */
-	if (unlikely(!budget)) {
-		dev_consume_skb_irq(skb);
-		return;
-	}
-
-	if (likely(atomic_read(&skb->users) == 1))
-		smp_rmb();
-	else if (likely(!atomic_dec_and_test(&skb->users)))
-		return;
-	/* if reaching here SKB is ready to free */
-	trace_consume_skb(skb);
-
-	/* if SKB is a clone, don't handle this case */
-	if (unlikely(skb->fclone != SKB_FCLONE_UNAVAILABLE)) {
-		__kfree_skb(skb);
-		return;
-	}
-
-	__kfree_skb_defer(skb);
-}
-EXPORT_SYMBOL(napi_consume_skb);
 
 /* Make sure a field is enclosed inside headers_start/headers_end section */
 #define CHECK_SKB_FIELD(field) \
@@ -1576,21 +1527,6 @@ done:
 	return 0;
 }
 EXPORT_SYMBOL(___pskb_trim);
-
-/* Note : use pskb_trim_rcsum() instead of calling this directly
- */
-int pskb_trim_rcsum_slow(struct sk_buff *skb, unsigned int len)
-{
-	if (skb->ip_summed == CHECKSUM_COMPLETE) {
-		int delta = skb->len - len;
-
-		skb->csum = csum_block_sub(skb->csum,
-					   skb_checksum(skb, len, delta, 0),
-					   len);
-	}
-	return __pskb_trim(skb, len);
-}
-EXPORT_SYMBOL(pskb_trim_rcsum_slow);
 
 /**
  *	__pskb_pull_tail - advance tail of skb header
@@ -2466,32 +2402,6 @@ void skb_queue_purge(struct sk_buff_head *list)
 		kfree_skb(skb);
 }
 EXPORT_SYMBOL(skb_queue_purge);
-
-/**
- *	skb_rbtree_purge - empty a skb rbtree
- *	@root: root of the rbtree to empty
- *	Return value: the sum of truesizes of all purged skbs.
- *
- *	Delete all buffers on an &sk_buff rbtree. Each buffer is removed from
- *	the list and one reference dropped. This function does not take
- *	any lock. Synchronization should be handled by the caller (e.g., TCP
- *	out-of-order queue is protected by the socket lock).
- */
-unsigned int skb_rbtree_purge(struct rb_root *root)
-{
-	struct rb_node *p = rb_first(root);
-	unsigned int sum = 0;
-
-	while (p) {
-		struct sk_buff *skb = rb_entry(p, struct sk_buff, rbnode);
-
-		p = rb_next(p);
-		rb_erase(&skb->rbnode, root);
-		sum += skb->truesize;
-		kfree_skb(skb);
-	}
-	return sum;
-}
 
 /**
  *	skb_queue_head - queue a buffer at the list head
@@ -4409,46 +4319,6 @@ unsigned int skb_gso_transport_seglen(const struct sk_buff *skb)
 	return thlen + shinfo->gso_size;
 }
 EXPORT_SYMBOL_GPL(skb_gso_transport_seglen);
-
-/*
- * skb_gso_size_check - check the skb size
- *
- * There are a couple of instances where we have a GSO skb, and we
- * want to determine what size it would be after it is segmented.
- *
- * We might want to check:
- * -    L3+L4+payload size (e.g. IP forwarding)
- * - L2+L3+L4+payload size (e.g. sanity check before passing to driver)
- *
- * @seg_len: The segmented length (from skb_gso_*_seglen).
- *
- * @max_len: The maximum permissible length.
- *
- * Returns true if the segmented length <= max length.
- *
- * In upstream this has to consider GSO_BY_FRAGS, but not in this
- * backport.
- */
-static inline bool skb_gso_size_check(const struct sk_buff *skb,
-				      unsigned int seg_len,
-				      unsigned int max_len) {
-	return seg_len <= max_len;
-}
-
-/**
- * skb_gso_validate_mac_len - Will a split GSO skb fit in a given length?
- *
- * @skb: GSO skb
- * @len: length to validate against
- *
- * skb_gso_validate_mac_len validates if a given skb will fit a wanted
- * length once split, including L2, L3 and L4 headers and the payload.
- */
-bool skb_gso_validate_mac_len(const struct sk_buff *skb, unsigned int len)
-{
-	return skb_gso_size_check(skb, skb_gso_mac_seglen(skb), len);
-}
-EXPORT_SYMBOL_GPL(skb_gso_validate_mac_len);
 
 static struct sk_buff *skb_reorder_vlan_header(struct sk_buff *skb)
 {

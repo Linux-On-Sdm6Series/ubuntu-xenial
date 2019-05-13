@@ -1637,9 +1637,9 @@ int mwifiex_ret_get_hw_spec(struct mwifiex_private *priv,
 		if (adapter->region_code == region_code_index[i])
 			break;
 
-	/* If it's unidentified region code, use the default (world) */
+	/* If it's unidentified region code, use the default (USA) */
 	if (i >= MWIFIEX_MAX_REGION_CODE) {
-		adapter->region_code = 0x00;
+		adapter->region_code = 0x10;
 		mwifiex_dbg(adapter, WARN,
 			    "cmd: unknown region code, use default (USA)\n");
 	}

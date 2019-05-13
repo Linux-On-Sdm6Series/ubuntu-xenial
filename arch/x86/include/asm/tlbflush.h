@@ -68,12 +68,8 @@ static inline void invpcid_flush_all_nonglobals(void)
 struct tlb_state {
 	struct mm_struct *active_mm;
 	int state;
-
-	/* Last user mm for optimizing IBPB */
-	union {
-		struct mm_struct	*last_user_mm;
-		unsigned long		last_user_mm_ibpb;
-	};
+	/* last user mm's ctx id */
+	u64 last_ctx_id;
 
 	/*
 	 * Access to this CR4 shadow and to H/W CR4 is protected by
@@ -204,6 +200,8 @@ static inline void __native_flush_tlb_global(void)
 		/*
 		 * Using INVPCID is considerably faster than a pair of writes
 		 * to CR4 sandwiched inside an IRQ flag save/restore.
+		 *
+	 	 * Note, this works with CR4.PCIDE=0 or 1.
 		 */
 		invpcid_flush_all();
 		return;

@@ -16,6 +16,7 @@
 #include <linux/mc146818rtc.h>
 #include <linux/bitops.h>
 #include <linux/acpi.h>
+#include <linux/module.h>
 #include <linux/smp.h>
 #include <linux/pci.h>
 

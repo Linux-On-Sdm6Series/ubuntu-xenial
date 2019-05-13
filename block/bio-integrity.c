@@ -66,7 +66,7 @@ struct bio_integrity_payload *bio_integrity_alloc(struct bio *bio,
 	}
 
 	if (unlikely(!bip))
-		return ERR_PTR(-ENOMEM);
+		return NULL;
 
 	memset(bip, 0, sizeof(*bip));
 
@@ -89,7 +89,7 @@ struct bio_integrity_payload *bio_integrity_alloc(struct bio *bio,
 	return bip;
 err:
 	mempool_free(bip, bs->bio_integrity_pool);
-	return ERR_PTR(-ENOMEM);
+	return NULL;
 }
 EXPORT_SYMBOL(bio_integrity_alloc);
 

@@ -183,6 +183,11 @@ static void *__init unw_hdr_alloc_early(unsigned long sz)
 				       MAX_DMA_ADDRESS);
 }
 
+static void *unw_hdr_alloc(unsigned long sz)
+{
+	return kmalloc(sz, GFP_KERNEL);
+}
+
 static void init_unwind_table(struct unwind_table *table, const char *name,
 			      const void *core_start, unsigned long core_size,
 			      const void *init_start, unsigned long init_size,
@@ -363,10 +368,6 @@ ret_err:
 }
 
 #ifdef CONFIG_MODULES
-static void *unw_hdr_alloc(unsigned long sz)
-{
-	return kmalloc(sz, GFP_KERNEL);
-}
 
 static struct unwind_table *last_table;
 
@@ -384,8 +385,8 @@ void *unwind_add_table(struct module *module, const void *table_start,
 		return NULL;
 
 	init_unwind_table(table, module->name,
-			  module->core_layout.base, module->core_layout.size,
-			  module->init_layout.base, module->init_layout.size,
+			  module->module_core, module->core_size,
+			  module->module_init, module->init_size,
 			  table_start, table_size,
 			  NULL, 0);
 

@@ -65,15 +65,9 @@
  *
  * The 40 bit 82580 SYSTIM overflows every
  *   2^40 * 10^-9 /  60  = 18.3 minutes.
- *
- * SYSTIM is converted to real time using a timecounter. As
- * timecounter_cyc2time() allows old timestamps, the timecounter
- * needs to be updated at least once per half of the SYSTIM interval.
- * Scheduling of delayed work is not very accurate, so we aim for 8
- * minutes to be sure the actual interval is shorter than 9.16 minutes.
  */
 
-#define IGB_SYSTIM_OVERFLOW_PERIOD	(HZ * 60 * 8)
+#define IGB_SYSTIM_OVERFLOW_PERIOD	(HZ * 60 * 9)
 #define IGB_PTP_TX_TIMEOUT		(HZ * 15)
 #define INCPERIOD_82576			(1 << E1000_TIMINCA_16NS_SHIFT)
 #define INCVALUE_82576_MASK		((1 << E1000_TIMINCA_16NS_SHIFT) - 1)
@@ -1130,13 +1124,12 @@ void igb_ptp_init(struct igb_adapter *adapter)
 }
 
 /**
- * igb_ptp_suspend - Disable PTP work items and prepare for suspend
- * @adapter: Board private structure
+ * igb_ptp_stop - Disable PTP device and stop the overflow check.
+ * @adapter: Board private structure.
  *
- * This function stops the overflow check work and PTP Tx timestamp work, and
- * will prepare the device for OS suspend.
- */
-void igb_ptp_suspend(struct igb_adapter *adapter)
+ * This function stops the PTP support and cancels the delayed work.
+ **/
+void igb_ptp_stop(struct igb_adapter *adapter)
 {
 	switch (adapter->hw.mac.type) {
 	case e1000_82576:
@@ -1159,17 +1152,6 @@ void igb_ptp_suspend(struct igb_adapter *adapter)
 		adapter->ptp_tx_skb = NULL;
 		clear_bit_unlock(__IGB_PTP_TX_IN_PROGRESS, &adapter->state);
 	}
-}
-
-/**
- * igb_ptp_stop - Disable PTP device and stop the overflow check.
- * @adapter: Board private structure.
- *
- * This function stops the PTP support and cancels the delayed work.
- **/
-void igb_ptp_stop(struct igb_adapter *adapter)
-{
-	igb_ptp_suspend(adapter);
 
 	if (adapter->ptp_clock) {
 		ptp_clock_unregister(adapter->ptp_clock);

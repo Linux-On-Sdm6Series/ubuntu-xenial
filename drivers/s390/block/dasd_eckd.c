@@ -223,7 +223,7 @@ check_XRC (struct ccw1         *de_ccw,
 	data->ga_extended |= 0x08; /* switch on 'Time Stamp Valid'   */
 	data->ga_extended |= 0x02; /* switch on 'Extended Parameter' */
 
-	rc = get_phys_clock(&data->ep_sys_time);
+	rc = get_sync_clock(&data->ep_sys_time);
 	/* Ignore return code if sync clock is switched off. */
 	if (rc == -EOPNOTSUPP || rc == -EACCES)
 		rc = 0;
@@ -334,7 +334,7 @@ static int check_XRC_on_prefix(struct PFX_eckd_data *pfxdata,
 	pfxdata->define_extent.ga_extended |= 0x02; /* 'Extended Parameter' */
 	pfxdata->validity.time_stamp = 1;	    /* 'Time Stamp Valid'   */
 
-	rc = get_phys_clock(&pfxdata->define_extent.ep_sys_time);
+	rc = get_sync_clock(&pfxdata->define_extent.ep_sys_time);
 	/* Ignore return code if sync clock is switched off. */
 	if (rc == -EOPNOTSUPP || rc == -EACCES)
 		rc = 0;
@@ -2066,14 +2066,14 @@ static int dasd_eckd_end_analysis(struct dasd_block *block)
 	blk_per_trk = recs_per_track(&private->rdc_data, 0, block->bp_block);
 
 raw:
-	block->blocks = ((unsigned long) private->real_cyl *
+	block->blocks = (private->real_cyl *
 			  private->rdc_data.trk_per_cyl *
 			  blk_per_trk);
 
 	dev_info(&device->cdev->dev,
-		 "DASD with %u KB/block, %lu KB total size, %u KB/track, "
+		 "DASD with %d KB/block, %d KB total size, %d KB/track, "
 		 "%s\n", (block->bp_block >> 10),
-		 (((unsigned long) private->real_cyl *
+		 ((private->real_cyl *
 		   private->rdc_data.trk_per_cyl *
 		   blk_per_trk * (block->bp_block >> 9)) >> 1),
 		 ((blk_per_trk * block->bp_block) >> 10),
@@ -2101,11 +2101,8 @@ static int dasd_eckd_basic_to_ready(struct dasd_device *device)
 
 static int dasd_eckd_online_to_ready(struct dasd_device *device)
 {
-	if (cancel_work_sync(&device->reload_device))
-		dasd_put_device(device);
-	if (cancel_work_sync(&device->kick_validate))
-		dasd_put_device(device);
-
+	cancel_work_sync(&device->reload_device);
+	cancel_work_sync(&device->kick_validate);
 	return 0;
 };
 
@@ -4022,14 +4019,6 @@ static int dasd_symm_io(struct dasd_device *device, void __user *argp)
 			goto out;
 		usrparm.psf_data &= 0x7fffffffULL;
 		usrparm.rssd_result &= 0x7fffffffULL;
-	}
-	/* at least 2 bytes are accessed and should be allocated */
-	if (usrparm.psf_data_len < 2) {
-		DBF_DEV_EVENT(DBF_WARNING, device,
-			      "Symmetrix ioctl invalid data length %d",
-			      usrparm.psf_data_len);
-		rc = -EINVAL;
-		goto out;
 	}
 	/* alloc I/O data area */
 	psf_data = kzalloc(usrparm.psf_data_len, GFP_KERNEL | GFP_DMA);

@@ -90,14 +90,10 @@ enum ad_link_speed_type {
 	AD_LINK_SPEED_100MBPS,
 	AD_LINK_SPEED_1000MBPS,
 	AD_LINK_SPEED_2500MBPS,
-	AD_LINK_SPEED_5000MBPS,
 	AD_LINK_SPEED_10000MBPS,
 	AD_LINK_SPEED_20000MBPS,
-	AD_LINK_SPEED_25000MBPS,
 	AD_LINK_SPEED_40000MBPS,
-	AD_LINK_SPEED_50000MBPS,
-	AD_LINK_SPEED_56000MBPS,
-	AD_LINK_SPEED_100000MBPS,
+	AD_LINK_SPEED_56000MBPS
 };
 
 /* compare MAC addresses */
@@ -258,14 +254,10 @@ static inline int __check_agg_selection_timer(struct port *port)
  *     %AD_LINK_SPEED_100MBPS,
  *     %AD_LINK_SPEED_1000MBPS,
  *     %AD_LINK_SPEED_2500MBPS,
- *     %AD_LINK_SPEED_5000MBPS,
  *     %AD_LINK_SPEED_10000MBPS
  *     %AD_LINK_SPEED_20000MBPS
- *     %AD_LINK_SPEED_25000MBPS
  *     %AD_LINK_SPEED_40000MBPS
- *     %AD_LINK_SPEED_50000MBPS
  *     %AD_LINK_SPEED_56000MBPS
- *     %AD_LINK_SPEED_100000MBPS
  */
 static u16 __get_link_speed(struct port *port)
 {
@@ -297,10 +289,6 @@ static u16 __get_link_speed(struct port *port)
 			speed = AD_LINK_SPEED_2500MBPS;
 			break;
 
-		case SPEED_5000:
-			speed = AD_LINK_SPEED_5000MBPS;
-			break;
-
 		case SPEED_10000:
 			speed = AD_LINK_SPEED_10000MBPS;
 			break;
@@ -309,24 +297,12 @@ static u16 __get_link_speed(struct port *port)
 			speed = AD_LINK_SPEED_20000MBPS;
 			break;
 
-		case SPEED_25000:
-			speed = AD_LINK_SPEED_25000MBPS;
-			break;
-
 		case SPEED_40000:
 			speed = AD_LINK_SPEED_40000MBPS;
 			break;
 
-		case SPEED_50000:
-			speed = AD_LINK_SPEED_50000MBPS;
-			break;
-
 		case SPEED_56000:
 			speed = AD_LINK_SPEED_56000MBPS;
-			break;
-
-		case SPEED_100000:
-			speed = AD_LINK_SPEED_100000MBPS;
 			break;
 
 		default:
@@ -667,20 +643,6 @@ static void __set_agg_ports_ready(struct aggregator *aggregator, int val)
 	}
 }
 
-static int __agg_active_ports(struct aggregator *agg)
-{
-	struct port *port;
-	int active = 0;
-
-	for (port = agg->lag_ports; port;
-	     port = port->next_port_in_aggregator) {
-		if (port->is_enabled)
-			active++;
-	}
-
-	return active;
-}
-
 /**
  * __get_agg_bandwidth - get the total bandwidth of an aggregator
  * @aggregator: the aggregator we're looking at
@@ -688,49 +650,36 @@ static int __agg_active_ports(struct aggregator *agg)
  */
 static u32 __get_agg_bandwidth(struct aggregator *aggregator)
 {
-	int nports = __agg_active_ports(aggregator);
 	u32 bandwidth = 0;
 
-	if (nports) {
+	if (aggregator->num_of_ports) {
 		switch (__get_link_speed(aggregator->lag_ports)) {
 		case AD_LINK_SPEED_1MBPS:
-			bandwidth = nports;
+			bandwidth = aggregator->num_of_ports;
 			break;
 		case AD_LINK_SPEED_10MBPS:
-			bandwidth = nports * 10;
+			bandwidth = aggregator->num_of_ports * 10;
 			break;
 		case AD_LINK_SPEED_100MBPS:
-			bandwidth = nports * 100;
+			bandwidth = aggregator->num_of_ports * 100;
 			break;
 		case AD_LINK_SPEED_1000MBPS:
-			bandwidth = nports * 1000;
+			bandwidth = aggregator->num_of_ports * 1000;
 			break;
 		case AD_LINK_SPEED_2500MBPS:
-			bandwidth = nports * 2500;
-			break;
-		case AD_LINK_SPEED_5000MBPS:
-			bandwidth = nports * 5000;
+			bandwidth = aggregator->num_of_ports * 2500;
 			break;
 		case AD_LINK_SPEED_10000MBPS:
-			bandwidth = nports * 10000;
+			bandwidth = aggregator->num_of_ports * 10000;
 			break;
 		case AD_LINK_SPEED_20000MBPS:
-			bandwidth = nports * 20000;
-			break;
-		case AD_LINK_SPEED_25000MBPS:
-			bandwidth = nports * 25000;
+			bandwidth = aggregator->num_of_ports * 20000;
 			break;
 		case AD_LINK_SPEED_40000MBPS:
-			bandwidth = nports * 40000;
-			break;
-		case AD_LINK_SPEED_50000MBPS:
-			bandwidth = nports * 50000;
+			bandwidth = aggregator->num_of_ports * 40000;
 			break;
 		case AD_LINK_SPEED_56000MBPS:
-			bandwidth = nports * 56000;
-			break;
-		case AD_LINK_SPEED_100000MBPS:
-			bandwidth = nports * 100000;
+			bandwidth = aggregator->num_of_ports * 56000;
 			break;
 		default:
 			bandwidth = 0; /* to silence the compiler */
@@ -1564,10 +1513,10 @@ static struct aggregator *ad_agg_selection_test(struct aggregator *best,
 
 	switch (__get_agg_selection_mode(curr->lag_ports)) {
 	case BOND_AD_COUNT:
-		if (__agg_active_ports(curr) > __agg_active_ports(best))
+		if (curr->num_of_ports > best->num_of_ports)
 			return curr;
 
-		if (__agg_active_ports(curr) < __agg_active_ports(best))
+		if (curr->num_of_ports < best->num_of_ports)
 			return best;
 
 		/*FALLTHROUGH*/
@@ -1595,14 +1544,8 @@ static int agg_device_up(const struct aggregator *agg)
 	if (!port)
 		return 0;
 
-	for (port = agg->lag_ports; port;
-	     port = port->next_port_in_aggregator) {
-		if (netif_running(port->slave->dev) &&
-		    netif_carrier_ok(port->slave->dev))
-			return 1;
-	}
-
-	return 0;
+	return netif_running(port->slave->dev) &&
+	       netif_carrier_ok(port->slave->dev);
 }
 
 /**
@@ -1650,7 +1593,7 @@ static void ad_agg_selection_logic(struct aggregator *agg,
 
 		agg->is_active = 0;
 
-		if (__agg_active_ports(agg) && agg_device_up(agg))
+		if (agg->num_of_ports && agg_device_up(agg))
 			best = ad_agg_selection_test(best, agg);
 	}
 
@@ -1662,7 +1605,7 @@ static void ad_agg_selection_logic(struct aggregator *agg,
 		 * answering partner.
 		 */
 		if (active && active->lag_ports &&
-		    __agg_active_ports(active) &&
+		    active->lag_ports->is_enabled &&
 		    (__agg_has_partner(active) ||
 		     (!__agg_has_partner(active) &&
 		     !__agg_has_partner(best)))) {
@@ -2068,9 +2011,6 @@ void bond_3ad_unbind_slave(struct slave *slave)
 		   aggregator->aggregator_identifier);
 
 	/* Tell the partner that this port is not suitable for aggregation */
-	port->actor_oper_port_state &= ~AD_STATE_SYNCHRONIZATION;
-	port->actor_oper_port_state &= ~AD_STATE_COLLECTING;
-	port->actor_oper_port_state &= ~AD_STATE_DISTRIBUTING;
 	port->actor_oper_port_state &= ~AD_STATE_AGGREGATION;
 	__update_lacpdu_from_port(port);
 	ad_lacpdu_send(port);
@@ -2178,7 +2118,7 @@ void bond_3ad_unbind_slave(struct slave *slave)
 				else
 					temp_aggregator->lag_ports = temp_port->next_port_in_aggregator;
 				temp_aggregator->num_of_ports--;
-				if (__agg_active_ports(temp_aggregator) == 0) {
+				if (temp_aggregator->num_of_ports == 0) {
 					select_new_active_agg = temp_aggregator->is_active;
 					ad_clear_agg(temp_aggregator);
 					if (select_new_active_agg) {
@@ -2445,9 +2385,7 @@ void bond_3ad_adapter_speed_duplex_changed(struct slave *slave)
  */
 void bond_3ad_handle_link_change(struct slave *slave, char link)
 {
-	struct aggregator *agg;
 	struct port *port;
-	bool dummy;
 
 	port = &(SLAVE_AD_INFO(slave)->port);
 
@@ -2474,9 +2412,6 @@ void bond_3ad_handle_link_change(struct slave *slave, char link)
 		port->is_enabled = false;
 		ad_update_actor_keys(port, true);
 	}
-	agg = __get_first_agg(port);
-	ad_agg_selection_logic(agg, &dummy);
-
 	netdev_dbg(slave->bond->dev, "Port %d changed link status to %s\n",
 		   port->actor_port_number,
 		   link == BOND_LINK_UP ? "UP" : "DOWN");
@@ -2517,7 +2452,7 @@ int bond_3ad_set_carrier(struct bonding *bond)
 	active = __get_active_agg(&(SLAVE_AD_INFO(first_slave)->aggregator));
 	if (active) {
 		/* are enough slaves available to consider link up? */
-		if (__agg_active_ports(active) < bond->params.min_links) {
+		if (active->num_of_ports < bond->params.min_links) {
 			if (netif_carrier_ok(bond->dev)) {
 				netif_carrier_off(bond->dev);
 				goto out;

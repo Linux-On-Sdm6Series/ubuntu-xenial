@@ -1,4 +1,4 @@
-/* Copyright (c) 2010-2011, 2013-2014, The Linux Foundation.
+/* Copyright (c) 2010-2011, 2013-2014, 2017, The Linux Foundation.
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or modify
@@ -345,8 +345,9 @@ static int msm_rpm_log_probe(struct platform_device *pdev)
 			/* Remap the rpm-log pointer */
 			phys_ptr = ioremap_nocache(offset->start, SZ_4);
 			if (!phys_ptr) {
-				pr_err("%s: Failed to ioremap address: %x\n",
-						__func__, offset_addr);
+				pr_err("%s: Failed to ioremap address: %pa\n",
+						__func__, &offset->start);
+				kfree(pdata);
 				return -ENODEV;
 			}
 			offset_addr = readl_relaxed(phys_ptr);
@@ -378,7 +379,8 @@ static int msm_rpm_log_probe(struct platform_device *pdev)
 		 * offset-log-len-mask: At this offset header contains
 		 * the log length mask for the buffer.
 		 * offset-page-indices: At this offset header contains
-		 * the index for writer. */
+		 * the index for writer.
+		 */
 
 		key = "qcom,offset-version";
 		ret = of_property_read_u32(node, key, &val);
@@ -515,7 +517,7 @@ static int msm_rpm_log_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct of_device_id rpm_log_table[] = {
+static const struct of_device_id rpm_log_table[] = {
 	       {.compatible = "qcom,rpm-log"},
 	       {},
 };
@@ -545,5 +547,4 @@ module_exit(msm_rpm_log_exit);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("MSM RPM Log driver");
-MODULE_VERSION("1.0");
 MODULE_ALIAS("platform:msm_rpm_log");

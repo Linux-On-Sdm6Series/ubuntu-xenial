@@ -1230,7 +1230,6 @@ struct net_device *gretap_fb_dev_create(struct net *net, const char *name,
 {
 	struct nlattr *tb[IFLA_MAX + 1];
 	struct net_device *dev;
-	LIST_HEAD(list_kill);
 	struct ip_tunnel *t;
 	int err;
 
@@ -1246,10 +1245,8 @@ struct net_device *gretap_fb_dev_create(struct net *net, const char *name,
 	t->collect_md = true;
 
 	err = ipgre_newlink(net, dev, tb, NULL);
-	if (err < 0) {
-		free_netdev(dev);
-		return ERR_PTR(err);
-	}
+	if (err < 0)
+		goto out;
 
 	/* openvswitch users expect packet sizes to be unrestricted,
 	 * so set the largest MTU we can.
@@ -1258,14 +1255,9 @@ struct net_device *gretap_fb_dev_create(struct net *net, const char *name,
 	if (err)
 		goto out;
 
-	err = rtnl_configure_link(dev, NULL);
-	if (err < 0)
-		goto out;
-
 	return dev;
 out:
-	ip_tunnel_dellink(dev, &list_kill);
-	unregister_netdevice_many(&list_kill);
+	free_netdev(dev);
 	return ERR_PTR(err);
 }
 EXPORT_SYMBOL_GPL(gretap_fb_dev_create);

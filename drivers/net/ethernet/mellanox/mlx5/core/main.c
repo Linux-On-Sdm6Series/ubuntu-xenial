@@ -49,9 +49,6 @@
 #include <linux/delay.h>
 #include <linux/mlx5/mlx5_ifc.h>
 #include "mlx5_core.h"
-#ifdef CONFIG_MLX5_CORE_EN
-#include "eswitch.h"
-#endif
 
 MODULE_AUTHOR("Eli Cohen <eli@mellanox.com>");
 MODULE_DESCRIPTION("Mellanox Connect-IB, ConnectX-4 core driver");
@@ -465,9 +462,6 @@ static int set_hca_ctrl(struct mlx5_core_dev *dev)
 	struct mlx5_reg_host_endianess he_out;
 	int err;
 
-	if (!mlx5_core_is_pf(dev))
-		return 0;
-
 	memset(&he_in, 0, sizeof(he_in));
 	he_in.he = MLX5_SET_HOST_ENDIANNESS;
 	err = mlx5_core_access_reg(dev, &he_in,  sizeof(he_in),
@@ -476,39 +470,42 @@ static int set_hca_ctrl(struct mlx5_core_dev *dev)
 	return err;
 }
 
-int mlx5_core_enable_hca(struct mlx5_core_dev *dev, u16 func_id)
+static int mlx5_core_enable_hca(struct mlx5_core_dev *dev)
 {
-	u32 out[MLX5_ST_SZ_DW(enable_hca_out)];
-	u32 in[MLX5_ST_SZ_DW(enable_hca_in)];
 	int err;
+	struct mlx5_enable_hca_mbox_in in;
+	struct mlx5_enable_hca_mbox_out out;
 
-	memset(in, 0, sizeof(in));
-	MLX5_SET(enable_hca_in, in, opcode, MLX5_CMD_OP_ENABLE_HCA);
-	MLX5_SET(enable_hca_in, in, function_id, func_id);
-	memset(out, 0, sizeof(out));
-
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+	in.hdr.opcode = cpu_to_be16(MLX5_CMD_OP_ENABLE_HCA);
 	err = mlx5_cmd_exec(dev, &in, sizeof(in), &out, sizeof(out));
 	if (err)
 		return err;
 
-	return mlx5_cmd_status_to_err_v2(out);
+	if (out.hdr.status)
+		return mlx5_cmd_status_to_err(&out.hdr);
+
+	return 0;
 }
 
-int mlx5_core_disable_hca(struct mlx5_core_dev *dev, u16 func_id)
+static int mlx5_core_disable_hca(struct mlx5_core_dev *dev)
 {
-	u32 out[MLX5_ST_SZ_DW(disable_hca_out)];
-	u32 in[MLX5_ST_SZ_DW(disable_hca_in)];
 	int err;
+	struct mlx5_disable_hca_mbox_in in;
+	struct mlx5_disable_hca_mbox_out out;
 
-	memset(in, 0, sizeof(in));
-	MLX5_SET(disable_hca_in, in, opcode, MLX5_CMD_OP_DISABLE_HCA);
-	MLX5_SET(disable_hca_in, in, function_id, func_id);
-	memset(out, 0, sizeof(out));
-	err = mlx5_cmd_exec(dev, in, sizeof(in), out, sizeof(out));
+	memset(&in, 0, sizeof(in));
+	memset(&out, 0, sizeof(out));
+	in.hdr.opcode = cpu_to_be16(MLX5_CMD_OP_DISABLE_HCA);
+	err = mlx5_cmd_exec(dev, &in, sizeof(in), &out, sizeof(out));
 	if (err)
 		return err;
 
-	return mlx5_cmd_status_to_err_v2(out);
+	if (out.hdr.status)
+		return mlx5_cmd_status_to_err(&out.hdr);
+
+	return 0;
 }
 
 static int mlx5_irq_set_affinity_hint(struct mlx5_core_dev *mdev, int i)
@@ -781,7 +778,7 @@ static void mlx5_unregister_device(struct mlx5_core_dev *dev)
 	struct mlx5_interface *intf;
 
 	mutex_lock(&intf_mutex);
-	list_for_each_entry_reverse(intf, &intf_list, list)
+	list_for_each_entry(intf, &intf_list, list)
 		mlx5_remove_device(intf, priv);
 	list_del(&priv->dev_list);
 	mutex_unlock(&intf_mutex);
@@ -916,7 +913,7 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 	int err;
 
 	mutex_lock(&dev->intf_state_mutex);
-	if (test_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state)) {
+	if (dev->interface_state == MLX5_INTERFACE_STATE_UP) {
 		dev_warn(&dev->pdev->dev, "%s: interface is up, NOP\n",
 			 __func__);
 		goto out;
@@ -954,7 +951,7 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 
 	mlx5_pagealloc_init(dev);
 
-	err = mlx5_core_enable_hca(dev, 0);
+	err = mlx5_core_enable_hca(dev);
 	if (err) {
 		dev_err(&pdev->dev, "enable hca failed\n");
 		goto err_pagealloc_cleanup;
@@ -1064,20 +1061,6 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 	mlx5_init_srq_table(dev);
 	mlx5_init_mr_table(dev);
 
-#ifdef CONFIG_MLX5_CORE_EN
-	err = mlx5_eswitch_init(dev);
-	if (err) {
-		dev_err(&pdev->dev, "eswitch init failed %d\n", err);
-		goto err_reg_dev;
-	}
-#endif
-
-	err = mlx5_sriov_init(dev);
-	if (err) {
-		dev_err(&pdev->dev, "sriov init failed %d\n", err);
-		goto err_sriov;
-	}
-
 	err = mlx5_register_device(dev);
 	if (err) {
 		dev_err(&pdev->dev, "mlx5_register_device failed %d\n", err);
@@ -1088,20 +1071,12 @@ static int mlx5_load_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 	if (err)
 		pr_info("failed request module on %s\n", MLX5_IB_MOD);
 
-	clear_bit(MLX5_INTERFACE_STATE_DOWN, &dev->intf_state);
-	set_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state);
+	dev->interface_state = MLX5_INTERFACE_STATE_UP;
 out:
 	mutex_unlock(&dev->intf_state_mutex);
 
 	return 0;
 
-err_sriov:
-	if (mlx5_sriov_cleanup(dev))
-		dev_err(&dev->pdev->dev, "sriov cleanup failed\n");
-
-#ifdef CONFIG_MLX5_CORE_EN
-	mlx5_eswitch_cleanup(dev->priv.eswitch);
-#endif
 err_reg_dev:
 	mlx5_cleanup_mr_table(dev);
 	mlx5_cleanup_srq_table(dev);
@@ -1140,7 +1115,7 @@ reclaim_boot_pages:
 	mlx5_reclaim_startup_pages(dev);
 
 err_disable_hca:
-	mlx5_core_disable_hca(dev, 0);
+	mlx5_core_disable_hca(dev);
 
 err_pagealloc_cleanup:
 	mlx5_pagealloc_cleanup(dev);
@@ -1157,24 +1132,13 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 {
 	int err = 0;
 
-	err = mlx5_sriov_cleanup(dev);
-	if (err) {
-		dev_warn(&dev->pdev->dev, "%s: sriov cleanup failed - abort\n",
-			 __func__);
-		return err;
-	}
-
 	mutex_lock(&dev->intf_state_mutex);
-	if (test_bit(MLX5_INTERFACE_STATE_DOWN, &dev->intf_state)) {
+	if (dev->interface_state == MLX5_INTERFACE_STATE_DOWN) {
 		dev_warn(&dev->pdev->dev, "%s: interface is down, NOP\n",
 			 __func__);
 		goto out;
 	}
 	mlx5_unregister_device(dev);
-#ifdef CONFIG_MLX5_CORE_EN
-	mlx5_eswitch_cleanup(dev->priv.eswitch);
-#endif
-
 	mlx5_cleanup_mr_table(dev);
 	mlx5_cleanup_srq_table(dev);
 	mlx5_cleanup_qp_table(dev);
@@ -1194,13 +1158,12 @@ static int mlx5_unload_one(struct mlx5_core_dev *dev, struct mlx5_priv *priv)
 	}
 	mlx5_pagealloc_stop(dev);
 	mlx5_reclaim_startup_pages(dev);
-	mlx5_core_disable_hca(dev, 0);
+	mlx5_core_disable_hca(dev);
 	mlx5_pagealloc_cleanup(dev);
 	mlx5_cmd_cleanup(dev);
 
 out:
-	clear_bit(MLX5_INTERFACE_STATE_UP, &dev->intf_state);
-	set_bit(MLX5_INTERFACE_STATE_DOWN, &dev->intf_state);
+	dev->interface_state = MLX5_INTERFACE_STATE_DOWN;
 	mutex_unlock(&dev->intf_state_mutex);
 	return err;
 }
@@ -1241,7 +1204,6 @@ static int init_one(struct pci_dev *pdev,
 		return -ENOMEM;
 	}
 	priv = &dev->priv;
-	priv->pci_dev_data = id->driver_data;
 
 	pci_set_drvdata(pdev, dev);
 
@@ -1411,25 +1373,13 @@ static const struct pci_error_handlers mlx5_err_handler = {
 	.resume		= mlx5_pci_resume
 };
 
-static void shutdown(struct pci_dev *pdev)
-{
-	struct mlx5_core_dev *dev  = pci_get_drvdata(pdev);
-	struct mlx5_priv *priv = &dev->priv;
-
-	dev_info(&pdev->dev, "Shutdown was called\n");
-	/* Notify mlx5 clients that the kernel is being shut down */
-	set_bit(MLX5_INTERFACE_STATE_SHUTDOWN, &dev->intf_state);
-	mlx5_unload_one(dev, priv);
-	mlx5_pci_disable_device(dev);
-}
-
 static const struct pci_device_id mlx5_core_pci_table[] = {
-	{ PCI_VDEVICE(MELLANOX, 0x1011) },			/* Connect-IB */
-	{ PCI_VDEVICE(MELLANOX, 0x1012), MLX5_PCI_DEV_IS_VF},	/* Connect-IB VF */
-	{ PCI_VDEVICE(MELLANOX, 0x1013) },			/* ConnectX-4 */
-	{ PCI_VDEVICE(MELLANOX, 0x1014), MLX5_PCI_DEV_IS_VF},	/* ConnectX-4 VF */
-	{ PCI_VDEVICE(MELLANOX, 0x1015) },			/* ConnectX-4LX */
-	{ PCI_VDEVICE(MELLANOX, 0x1016), MLX5_PCI_DEV_IS_VF},	/* ConnectX-4LX VF */
+	{ PCI_VDEVICE(MELLANOX, 0x1011) }, /* Connect-IB */
+	{ PCI_VDEVICE(MELLANOX, 0x1012) }, /* Connect-IB VF */
+	{ PCI_VDEVICE(MELLANOX, 0x1013) }, /* ConnectX-4 */
+	{ PCI_VDEVICE(MELLANOX, 0x1014) }, /* ConnectX-4 VF */
+	{ PCI_VDEVICE(MELLANOX, 0x1015) }, /* ConnectX-4LX */
+	{ PCI_VDEVICE(MELLANOX, 0x1016) }, /* ConnectX-4LX VF */
 	{ 0, }
 };
 
@@ -1440,9 +1390,7 @@ static struct pci_driver mlx5_core_driver = {
 	.id_table       = mlx5_core_pci_table,
 	.probe          = init_one,
 	.remove         = remove_one,
-	.shutdown	= shutdown,
-	.err_handler	= &mlx5_err_handler,
-	.sriov_configure   = mlx5_core_sriov_configure,
+	.err_handler	= &mlx5_err_handler
 };
 
 static int __init init(void)

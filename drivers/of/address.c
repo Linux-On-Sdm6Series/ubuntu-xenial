@@ -4,7 +4,6 @@
 #include <linux/ioport.h>
 #include <linux/module.h>
 #include <linux/of_address.h>
-#include <linux/pci.h>
 #include <linux/pci_regs.h>
 #include <linux/sizes.h>
 #include <linux/slab.h>
@@ -674,6 +673,137 @@ const __be32 *of_get_address(struct device_node *dev, int index, u64 *size,
 }
 EXPORT_SYMBOL(of_get_address);
 
+#ifdef PCI_IOBASE
+struct io_range {
+	struct list_head list;
+	phys_addr_t start;
+	resource_size_t size;
+};
+
+static LIST_HEAD(io_range_list);
+static DEFINE_SPINLOCK(io_range_lock);
+#endif
+
+/*
+ * Record the PCI IO range (expressed as CPU physical address + size).
+ * Return a negative value if an error has occured, zero otherwise
+ */
+int __weak pci_register_io_range(phys_addr_t addr, resource_size_t size)
+{
+	int err = 0;
+
+#ifdef PCI_IOBASE
+	struct io_range *range;
+	resource_size_t allocated_size = 0;
+
+	/* check if the range hasn't been previously recorded */
+	spin_lock(&io_range_lock);
+	list_for_each_entry(range, &io_range_list, list) {
+		if (addr >= range->start && addr + size <= range->start + size) {
+			/* range already registered, bail out */
+			goto end_register;
+		}
+		allocated_size += range->size;
+	}
+
+	/* range not registed yet, check for available space */
+	if (allocated_size + size - 1 > IO_SPACE_LIMIT) {
+		/* if it's too big check if 64K space can be reserved */
+		if (allocated_size + SZ_64K - 1 > IO_SPACE_LIMIT) {
+			err = -E2BIG;
+			goto end_register;
+		}
+
+		size = SZ_64K;
+		pr_warn("Requested IO range too big, new size set to 64K\n");
+	}
+
+	/* add the range to the list */
+	range = kzalloc(sizeof(*range), GFP_ATOMIC);
+	if (!range) {
+		err = -ENOMEM;
+		goto end_register;
+	}
+
+	range->start = addr;
+	range->size = size;
+
+	list_add_tail(&range->list, &io_range_list);
+
+end_register:
+	spin_unlock(&io_range_lock);
+#endif
+
+	return err;
+}
+
+phys_addr_t pci_pio_to_address(unsigned long pio)
+{
+	phys_addr_t address = (phys_addr_t)OF_BAD_ADDR;
+
+#ifdef PCI_IOBASE
+	struct io_range *range;
+	resource_size_t allocated_size = 0;
+
+	if (pio > IO_SPACE_LIMIT)
+		return address;
+
+	spin_lock(&io_range_lock);
+	list_for_each_entry(range, &io_range_list, list) {
+		if (pio >= allocated_size && pio < allocated_size + range->size) {
+			address = range->start + pio - allocated_size;
+			break;
+		}
+		allocated_size += range->size;
+	}
+	spin_unlock(&io_range_lock);
+#endif
+
+	return address;
+}
+
+unsigned long __weak pci_address_to_pio(phys_addr_t address)
+{
+#ifdef PCI_IOBASE
+	struct io_range *res;
+	resource_size_t offset = 0;
+	unsigned long addr = -1;
+
+	spin_lock(&io_range_lock);
+	list_for_each_entry(res, &io_range_list, list) {
+		if (address >= res->start && address < res->start + res->size) {
+			addr = address - res->start + offset;
+			break;
+		}
+		offset += res->size;
+	}
+	spin_unlock(&io_range_lock);
+
+	return addr;
+#else
+	if (address > IO_SPACE_LIMIT)
+		return (unsigned long)-1;
+
+	return (unsigned long) address;
+#endif
+}
+
+const __be32 *of_get_address_by_name(struct device_node *dev, const char *name,
+		u64 *size, unsigned int *flags)
+{
+	int index;
+	if (!name)
+		return NULL;
+
+	/* Try to read "reg-names" property and get the index by name */
+	index = of_property_match_string(dev, "reg-names", name);
+	if (index < 0)
+		return NULL;
+
+	return of_get_address(dev, index, size, flags);
+}
+EXPORT_SYMBOL(of_get_address_by_name);
+
 static int __of_address_to_resource(struct device_node *dev,
 		const __be32 *addrp, u64 size, unsigned int flags,
 		const char *name, struct resource *r)
@@ -817,8 +947,8 @@ EXPORT_SYMBOL(of_io_request_and_map);
  *	CPU addr (phys_addr_t)	: pna cells
  *	size			: nsize cells
  *
- * Return 0 on success, -ENODEV if the "dma-ranges" property was not found for
- * this device in DT, or -EINVAL if the CPU address or size is invalid.
+ * It returns -ENODEV if "dma-ranges" property was not found
+ * for this device in DT.
  */
 int of_dma_get_range(struct device_node *np, u64 *dma_addr, u64 *paddr, u64 *size)
 {
@@ -879,22 +1009,6 @@ int of_dma_get_range(struct device_node *np, u64 *dma_addr, u64 *paddr, u64 *siz
 	*dma_addr = dmaaddr;
 
 	*size = of_read_number(ranges + naddr + pna, nsize);
-	/*
-	 * DT nodes sometimes incorrectly set the size as a mask. Work around
-	 * those incorrect DT by computing the size as mask + 1.
-	 */
-	if (*size & 1) {
-		pr_warn("%s: size 0x%llx for dma-range in node(%s) set as mask\n",
-			__func__, *size, np->full_name);
-		*size = *size + 1;
-	}
-
-	if (!*size) {
-		pr_err("%s: invalid size zero for dma-range in node(%s)\n",
-		       __func__, np->full_name);
-		ret = -EINVAL;
-		goto out;
-	}
 
 	pr_debug("dma_addr(%llx) cpu_addr(%llx) size(%llx)\n",
 		 *dma_addr, *paddr, *size);
@@ -911,15 +1025,11 @@ EXPORT_SYMBOL_GPL(of_dma_get_range);
  * @np:	device node
  *
  * It returns true if "dma-coherent" property was found
- * for this device in the DT, or if DMA is coherent by
- * default for OF devices on the current platform.
+ * for this device in DT.
  */
 bool of_dma_is_coherent(struct device_node *np)
 {
 	struct device_node *node = of_node_get(np);
-
-	if (IS_ENABLED(CONFIG_OF_DMA_DEFAULT_COHERENT))
-		return true;
 
 	while (node) {
 		if (of_property_read_bool(node, "dma-coherent")) {
@@ -932,3 +1042,19 @@ bool of_dma_is_coherent(struct device_node *np)
 	return false;
 }
 EXPORT_SYMBOL_GPL(of_dma_is_coherent);
+
+void __iomem *of_iomap_by_name(struct device_node *np, const char *name)
+{
+	int index;
+
+	if (!name)
+		return NULL;
+
+	/* Try to read "reg-names" property and get the index by name */
+	index = of_property_match_string(np, "reg-names", name);
+	if (index < 0)
+		return NULL;
+
+	return of_iomap(np, index);
+}
+EXPORT_SYMBOL(of_iomap_by_name);

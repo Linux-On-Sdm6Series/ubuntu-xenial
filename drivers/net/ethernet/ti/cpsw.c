@@ -371,6 +371,7 @@ struct cpsw_priv {
 	spinlock_t			lock;
 	struct platform_device		*pdev;
 	struct net_device		*ndev;
+	struct device_node		*phy_node;
 	struct napi_struct		napi_rx;
 	struct napi_struct		napi_tx;
 	struct device			*dev;
@@ -745,7 +746,6 @@ static void cpsw_rx_handler(void *token, int len, int status)
 		netif_receive_skb(skb);
 		ndev->stats.rx_bytes += len;
 		ndev->stats.rx_packets++;
-		kmemleak_not_leak(new_skb);
 	} else {
 		ndev->stats.rx_dropped++;
 		new_skb = skb;
@@ -778,8 +778,8 @@ static irqreturn_t cpsw_rx_interrupt(int irq, void *dev_id)
 {
 	struct cpsw_priv *priv = dev_id;
 
-	writel(0, &priv->wr_regs->rx_en);
 	cpdma_ctlr_eoi(priv->dma, CPDMA_EOI_RX);
+	writel(0, &priv->wr_regs->rx_en);
 
 	if (priv->quirk_irq) {
 		disable_irq_nosync(priv->irqs_table[0]);
@@ -1165,34 +1165,25 @@ static void cpsw_slave_open(struct cpsw_slave *slave, struct cpsw_priv *priv)
 		cpsw_ale_add_mcast(priv->ale, priv->ndev->broadcast,
 				   1 << slave_port, 0, 0, ALE_MCAST_FWD_2);
 
-	if (slave->data->phy_node) {
-		slave->phy = of_phy_connect(priv->ndev, slave->data->phy_node,
+	if (priv->phy_node)
+		slave->phy = of_phy_connect(priv->ndev, priv->phy_node,
 				 &cpsw_adjust_link, 0, slave->data->phy_if);
-		if (!slave->phy) {
-			dev_err(priv->dev, "phy \"%s\" not found on slave %d\n",
-				slave->data->phy_node->full_name,
-				slave->slave_num);
-			return;
-		}
-	} else {
+	else
 		slave->phy = phy_connect(priv->ndev, slave->data->phy_id,
 				 &cpsw_adjust_link, slave->data->phy_if);
-		if (IS_ERR(slave->phy)) {
-			dev_err(priv->dev,
-				"phy \"%s\" not found on slave %d, err %ld\n",
-				slave->data->phy_id, slave->slave_num,
-				PTR_ERR(slave->phy));
-			slave->phy = NULL;
-			return;
-		}
+	if (IS_ERR(slave->phy)) {
+		dev_err(priv->dev, "phy %s not found on slave %d\n",
+			slave->data->phy_id, slave->slave_num);
+		slave->phy = NULL;
+	} else {
+		dev_info(priv->dev, "phy found : id is : 0x%x\n",
+			 slave->phy->phy_id);
+		phy_start(slave->phy);
+
+		/* Configure GMII_SEL register */
+		cpsw_phy_sel(&priv->pdev->dev, slave->phy->interface,
+			     slave->slave_num);
 	}
-
-	dev_info(priv->dev, "phy found : id is : 0x%x\n", slave->phy->phy_id);
-
-	phy_start(slave->phy);
-
-	/* Configure GMII_SEL register */
-	cpsw_phy_sel(&priv->pdev->dev, slave->phy->interface, slave->slave_num);
 }
 
 static inline void cpsw_add_default_vlan(struct cpsw_priv *priv)
@@ -1269,7 +1260,6 @@ static void cpsw_slave_stop(struct cpsw_slave *slave, struct cpsw_priv *priv)
 	slave->phy = NULL;
 	cpsw_ale_control_set(priv->ale, slave_port,
 			     ALE_PORT_STATE, ALE_PORT_STATE_DISABLE);
-	soft_reset_slave(slave);
 }
 
 static int cpsw_ndo_open(struct net_device *ndev)
@@ -1278,15 +1268,11 @@ static int cpsw_ndo_open(struct net_device *ndev)
 	int i, ret;
 	u32 reg;
 
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		return ret;
-	}
-
 	if (!cpsw_common_res_usage_state(priv))
 		cpsw_intr_disable(priv);
 	netif_carrier_off(ndev);
+
+	pm_runtime_get_sync(&priv->pdev->dev);
 
 	reg = priv->version;
 
@@ -1353,7 +1339,6 @@ static int cpsw_ndo_open(struct net_device *ndev)
 				kfree_skb(skb);
 				goto err_cleanup;
 			}
-			kmemleak_not_leak(skb);
 		}
 		/* continue even if we didn't manage to submit all
 		 * receive descs
@@ -1643,16 +1628,9 @@ static int cpsw_ndo_set_mac_address(struct net_device *ndev, void *p)
 	struct sockaddr *addr = (struct sockaddr *)p;
 	int flags = 0;
 	u16 vid = 0;
-	int ret;
 
 	if (!is_valid_ether_addr(addr->sa_data))
 		return -EADDRNOTAVAIL;
-
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		return ret;
-	}
 
 	if (priv->data.dual_emac) {
 		vid = priv->slaves[priv->emac_port].port_vlan;
@@ -1667,8 +1645,6 @@ static int cpsw_ndo_set_mac_address(struct net_device *ndev, void *p)
 	memcpy(priv->mac_addr, addr->sa_data, ETH_ALEN);
 	memcpy(ndev->dev_addr, priv->mac_addr, ETH_ALEN);
 	for_each_slave(priv, cpsw_set_slave_mac, priv);
-
-	pm_runtime_put(&priv->pdev->dev);
 
 	return 0;
 }
@@ -1734,16 +1710,9 @@ static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
 				    __be16 proto, u16 vid)
 {
 	struct cpsw_priv *priv = netdev_priv(ndev);
-	int ret;
 
 	if (vid == priv->data.default_vlan)
 		return 0;
-
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		return ret;
-	}
 
 	if (priv->data.dual_emac) {
 		/* In dual EMAC, reserved VLAN id should not be used for
@@ -1759,10 +1728,7 @@ static int cpsw_ndo_vlan_rx_add_vid(struct net_device *ndev,
 	}
 
 	dev_info(priv->dev, "Adding vlanid %d to vlan filter\n", vid);
-	ret = cpsw_add_vlan_ale_entry(priv, vid);
-
-	pm_runtime_put(&priv->pdev->dev);
-	return ret;
+	return cpsw_add_vlan_ale_entry(priv, vid);
 }
 
 static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
@@ -1773,12 +1739,6 @@ static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
 
 	if (vid == priv->data.default_vlan)
 		return 0;
-
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		return ret;
-	}
 
 	if (priv->data.dual_emac) {
 		int i;
@@ -1799,10 +1759,8 @@ static int cpsw_ndo_vlan_rx_kill_vid(struct net_device *ndev,
 	if (ret != 0)
 		return ret;
 
-	ret = cpsw_ale_del_mcast(priv->ale, priv->ndev->broadcast,
-				 0, ALE_VLAN, vid);
-	pm_runtime_put(&priv->pdev->dev);
-	return ret;
+	return cpsw_ale_del_mcast(priv->ale, priv->ndev->broadcast,
+				  0, ALE_VLAN, vid);
 }
 
 static const struct net_device_ops cpsw_netdev_ops = {
@@ -1961,31 +1919,8 @@ static int cpsw_set_pauseparam(struct net_device *ndev,
 	priv->tx_pause = pause->tx_pause ? true : false;
 
 	for_each_slave(priv, _cpsw_adjust_link, priv, &link);
+
 	return 0;
-}
-
-static int cpsw_ethtool_op_begin(struct net_device *ndev)
-{
-	struct cpsw_priv *priv = netdev_priv(ndev);
-	int ret;
-
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		cpsw_err(priv, drv, "ethtool begin failed %d\n", ret);
-		pm_runtime_put_noidle(&priv->pdev->dev);
-	}
-
-	return ret;
-}
-
-static void cpsw_ethtool_op_complete(struct net_device *ndev)
-{
-	struct cpsw_priv *priv = netdev_priv(ndev);
-	int ret;
-
-	ret = pm_runtime_put(&priv->pdev->dev);
-	if (ret < 0)
-		cpsw_err(priv, drv, "ethtool complete failed %d\n", ret);
 }
 
 static const struct ethtool_ops cpsw_ethtool_ops = {
@@ -2007,8 +1942,6 @@ static const struct ethtool_ops cpsw_ethtool_ops = {
 	.set_wol	= cpsw_set_wol,
 	.get_regs_len	= cpsw_get_regs_len,
 	.get_regs	= cpsw_get_regs,
-	.begin		= cpsw_ethtool_op_begin,
-	.complete	= cpsw_ethtool_op_complete,
 };
 
 static void cpsw_slave_init(struct cpsw_slave *slave, struct cpsw_priv *priv,
@@ -2024,11 +1957,12 @@ static void cpsw_slave_init(struct cpsw_slave *slave, struct cpsw_priv *priv,
 	slave->port_vlan = data->dual_emac_res_vlan;
 }
 
-static int cpsw_probe_dt(struct cpsw_platform_data *data,
+static int cpsw_probe_dt(struct cpsw_priv *priv,
 			 struct platform_device *pdev)
 {
 	struct device_node *node = pdev->dev.of_node;
 	struct device_node *slave_node;
+	struct cpsw_platform_data *data = &priv->data;
 	int i = 0, ret;
 	u32 prop;
 
@@ -2116,8 +2050,7 @@ static int cpsw_probe_dt(struct cpsw_platform_data *data,
 		if (strcmp(slave_node->name, "slave"))
 			continue;
 
-		slave_data->phy_node = of_parse_phandle(slave_node,
-							"phy-handle", 0);
+		priv->phy_node = of_parse_phandle(slave_node, "phy-handle", 0);
 		parp = of_get_property(slave_node, "phy_id", &lenp);
 		if (of_phy_is_fixed_link(slave_node)) {
 			struct device_node *phy_node;
@@ -2154,7 +2087,6 @@ static int cpsw_probe_dt(struct cpsw_platform_data *data,
 			}
 			snprintf(slave_data->phy_id, sizeof(slave_data->phy_id),
 				 PHY_ID_FMT, mdio->name, phyid);
-			put_device(&mdio->dev);
 		} else {
 			dev_err(&pdev->dev, "No slave[%d] phy_id or fixed-link property\n", i);
 			goto no_phy_slave;
@@ -2359,7 +2291,7 @@ static int cpsw_probe(struct platform_device *pdev)
 	/* Select default pin state */
 	pinctrl_pm_select_default_state(&pdev->dev);
 
-	if (cpsw_probe_dt(&priv->data, pdev)) {
+	if (cpsw_probe_dt(priv, pdev)) {
 		dev_err(&pdev->dev, "cpsw: platform data missing\n");
 		ret = -ENODEV;
 		goto clean_runtime_disable_ret;
@@ -2410,11 +2342,7 @@ static int cpsw_probe(struct platform_device *pdev)
 	/* Need to enable clocks with runtime PM api to access module
 	 * registers
 	 */
-	ret = pm_runtime_get_sync(&pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&pdev->dev);
-		goto clean_runtime_disable_ret;
-	}
+	pm_runtime_get_sync(&pdev->dev);
 	priv->version = readl(&priv->regs->id_ver);
 	pm_runtime_put_sync(&pdev->dev);
 
@@ -2608,17 +2536,19 @@ clean_ndev_ret:
 	return ret;
 }
 
+static int cpsw_remove_child_device(struct device *dev, void *c)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+
+	of_device_unregister(pdev);
+
+	return 0;
+}
+
 static int cpsw_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct cpsw_priv *priv = netdev_priv(ndev);
-	int ret;
-
-	ret = pm_runtime_get_sync(&pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&pdev->dev);
-		return ret;
-	}
 
 	if (priv->data.dual_emac)
 		unregister_netdev(cpsw_get_slave_ndev(priv, 1));
@@ -2628,9 +2558,8 @@ static int cpsw_remove(struct platform_device *pdev)
 	cpdma_chan_destroy(priv->txch);
 	cpdma_chan_destroy(priv->rxch);
 	cpdma_ctlr_destroy(priv->dma);
-	of_platform_depopulate(&pdev->dev);
-	pm_runtime_put_sync(&pdev->dev);
 	pm_runtime_disable(&pdev->dev);
+	device_for_each_child(&pdev->dev, NULL, cpsw_remove_child_device);
 	if (priv->data.dual_emac)
 		free_netdev(cpsw_get_slave_ndev(priv, 1));
 	free_netdev(ndev);
@@ -2650,11 +2579,15 @@ static int cpsw_suspend(struct device *dev)
 		for (i = 0; i < priv->data.slaves; i++) {
 			if (netif_running(priv->slaves[i].ndev))
 				cpsw_ndo_stop(priv->slaves[i].ndev);
+			soft_reset_slave(priv->slaves + i);
 		}
 	} else {
 		if (netif_running(ndev))
 			cpsw_ndo_stop(ndev);
+		for_each_slave(priv, soft_reset_slave);
 	}
+
+	pm_runtime_put_sync(&pdev->dev);
 
 	/* Select sleep pin state */
 	pinctrl_pm_select_sleep_state(&pdev->dev);
@@ -2667,6 +2600,8 @@ static int cpsw_resume(struct device *dev)
 	struct platform_device	*pdev = to_platform_device(dev);
 	struct net_device	*ndev = platform_get_drvdata(pdev);
 	struct cpsw_priv	*priv = netdev_priv(ndev);
+
+	pm_runtime_get_sync(&pdev->dev);
 
 	/* Select default pin state */
 	pinctrl_pm_select_default_state(&pdev->dev);

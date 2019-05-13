@@ -100,12 +100,10 @@ struct mipi_dsi_host_ops {
 struct mipi_dsi_host {
 	struct device *dev;
 	const struct mipi_dsi_host_ops *ops;
-	struct list_head list;
 };
 
 int mipi_dsi_host_register(struct mipi_dsi_host *host);
 void mipi_dsi_host_unregister(struct mipi_dsi_host *host);
-struct mipi_dsi_host *of_find_mipi_dsi_host_by_node(struct device_node *node);
 
 /* DSI mode flags */
 
@@ -141,13 +139,10 @@ enum mipi_dsi_pixel_format {
 	MIPI_DSI_FMT_RGB565,
 };
 
-#define DSI_DEV_NAME_SIZE		20
-
 /**
  * struct mipi_dsi_device - DSI peripheral device
  * @host: DSI host for this peripheral
  * @dev: driver model device node for this peripheral
- * @name: name of the dsi peripheral
  * @channel: virtual channel assigned to the peripheral
  * @format: pixel format for video mode
  * @lanes: number of active data lanes
@@ -156,8 +151,6 @@ enum mipi_dsi_pixel_format {
 struct mipi_dsi_device {
 	struct mipi_dsi_host *host;
 	struct device dev;
-
-	char name[DSI_DEV_NAME_SIZE];
 
 	unsigned int channel;
 	unsigned int lanes;
@@ -170,33 +163,6 @@ static inline struct mipi_dsi_device *to_mipi_dsi_device(struct device *dev)
 	return container_of(dev, struct mipi_dsi_device, dev);
 }
 
-/**
- * mipi_dsi_pixel_format_to_bpp - obtain the number of bits per pixel for any
- *                                given pixel format defined by the MIPI DSI
- *                                specification
- * @fmt: MIPI DSI pixel format
- *
- * Returns: The number of bits per pixel of the given pixel format.
- */
-static inline int mipi_dsi_pixel_format_to_bpp(enum mipi_dsi_pixel_format fmt)
-{
-	switch (fmt) {
-	case MIPI_DSI_FMT_RGB888:
-	case MIPI_DSI_FMT_RGB666:
-		return 24;
-
-	case MIPI_DSI_FMT_RGB666_PACKED:
-		return 18;
-
-	case MIPI_DSI_FMT_RGB565:
-		return 16;
-	}
-
-	return -EINVAL;
-}
-
-struct mipi_dsi_device *mipi_dsi_new_dummy(struct mipi_dsi_host *host, u32 reg);
-void mipi_dsi_unregister_device(struct mipi_dsi_device *dsi);
 struct mipi_dsi_device *of_find_mipi_dsi_device_by_node(struct device_node *np);
 int mipi_dsi_attach(struct mipi_dsi_device *dsi);
 int mipi_dsi_detach(struct mipi_dsi_device *dsi);

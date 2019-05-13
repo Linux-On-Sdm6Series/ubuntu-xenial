@@ -22,6 +22,7 @@
 
 #define CXLFLASH_NAME		"cxlflash"
 #define CXLFLASH_ADAPTER_NAME	"IBM POWER CXL Flash Adapter"
+#define CXLFLASH_DRIVER_DATE	"(August 13, 2015)"
 
 #define PCI_DEVICE_ID_IBM_CORSA		0x04F0
 #define PCI_DEVICE_ID_IBM_FLASH_GT	0x0600
@@ -79,17 +80,16 @@
 #define WWPN_BUF_LEN	(WWPN_LEN + 1)
 
 enum undo_level {
-	UNDO_NOOP = 0,
+	RELEASE_CONTEXT = 0,
 	FREE_IRQ,
 	UNMAP_ONE,
 	UNMAP_TWO,
-	UNMAP_THREE
+	UNMAP_THREE,
+	UNDO_START
 };
 
 struct dev_dependent_vals {
 	u64 max_sectors;
-	u64 flags;
-#define CXLFLASH_NOTIFY_SHUTDOWN   0x0000000000000001ULL
 };
 
 struct asyc_intr_info {

@@ -20,6 +20,7 @@
 #include <linux/string.h>
 #include <linux/spinlock.h>
 #include <linux/pci.h>
+#include <linux/module.h>
 #include <linux/topology.h>
 #include <linux/interrupt.h>
 #include <linux/bitmap.h>

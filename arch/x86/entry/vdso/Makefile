@@ -5,6 +5,9 @@
 KBUILD_CFLAGS += $(DISABLE_LTO)
 KASAN_SANITIZE := n
 
+# Prevents link failures: __sanitizer_cov_trace_pc() is not linked in.
+KCOV_INSTRUMENT		:= n
+
 VDSO64-$(CONFIG_X86_64)		:= y
 VDSOX32-$(CONFIG_X86_X32_ABI)	:= y
 VDSO32-$(CONFIG_X86_32)		:= y
@@ -43,7 +46,7 @@ export CPPFLAGS_vdso.lds += -P -C
 
 VDSO_LDFLAGS_vdso.lds = -m64 -Wl,-soname=linux-vdso.so.1 \
 			-Wl,--no-undefined \
-			-Wl,-z,max-page-size=4096 \
+			-Wl,-z,max-page-size=4096 -Wl,-z,common-page-size=4096 \
 			$(DISABLE_LTO)
 
 $(obj)/vdso64.so.dbg: $(src)/vdso.lds $(vobjs) FORCE
@@ -92,7 +95,8 @@ CFLAGS_REMOVE_vvar.o = -pg
 CPPFLAGS_vdsox32.lds = $(CPPFLAGS_vdso.lds)
 VDSO_LDFLAGS_vdsox32.lds = -Wl,-m,elf32_x86_64 \
 			   -Wl,-soname=linux-vdso.so.1 \
-			   -Wl,-z,max-page-size=4096
+			   -Wl,-z,max-page-size=4096 \
+			   -Wl,-z,common-page-size=4096
 
 # 64-bit objects to re-brand as x32
 vobjs64-for-x32 := $(filter-out $(vobjs-nox32),$(vobjs-y))
@@ -162,7 +166,8 @@ quiet_cmd_vdso = VDSO    $@
 		 sh $(srctree)/$(src)/checkundef.sh '$(NM)' '$@'
 
 VDSO_LDFLAGS = -fPIC -shared $(call cc-ldoption, -Wl$(comma)--hash-style=both) \
-	$(call cc-ldoption, -Wl$(comma)--build-id) -Wl,-Bsymbolic $(LTO_CFLAGS)
+	$(call cc-ldoption, -Wl$(comma)--build-id) -Wl,-Bsymbolic $(LTO_CFLAGS) \
+	$(filter --target=% --gcc-toolchain=%,$(KBUILD_CFLAGS))
 GCOV_PROFILE := n
 
 #
@@ -186,10 +191,10 @@ vdso_img_insttargets := $(vdso_img_sodbg:%.dbg=install_%)
 $(MODLIB)/vdso: FORCE
 	@mkdir -p $(MODLIB)/vdso
 
-$(vdso_img_insttargets): install_%: $(obj)/%.dbg $(MODLIB)/vdso FORCE
+$(vdso_img_insttargets): install_%: $(obj)/%.dbg $(MODLIB)/vdso
 	$(call cmd,vdso_install)
 
 PHONY += vdso_install $(vdso_img_insttargets)
-vdso_install: $(vdso_img_insttargets) FORCE
+vdso_install: $(vdso_img_insttargets)
 
 clean-files := vdso32.so vdso32.so.dbg vdso64* vdso-image-*.c vdsox32.so*

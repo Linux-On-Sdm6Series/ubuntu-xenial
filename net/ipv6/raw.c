@@ -62,7 +62,6 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/export.h>
-#include <linux/nospec.h>
 
 #define	ICMPV6_HDRLEN	4	/* ICMPv6 header, RFC 4443 Section 2.1 */
 
@@ -284,9 +283,7 @@ static int rawv6_bind(struct sock *sk, struct sockaddr *uaddr, int addr_len)
 			/* Binding to link-local address requires an interface */
 			if (!sk->sk_bound_dev_if)
 				goto out_unlock;
-		}
 
-		if (sk->sk_bound_dev_if) {
 			err = -ENODEV;
 			dev = dev_get_by_index_rcu(sock_net(sk),
 						   sk->sk_bound_dev_if);
@@ -657,9 +654,6 @@ static int rawv6_send_hdrinc(struct sock *sk, struct msghdr *msg, int length,
 
 	skb->ip_summed = CHECKSUM_NONE;
 
-	if (flags & MSG_CONFIRM)
-		skb_set_dst_pending_confirm(skb, 1);
-
 	skb->transport_header = skb->network_header;
 	err = memcpy_from_msg(iph, msg, length);
 	if (err)
@@ -718,10 +712,7 @@ static int raw6_getfrag(void *from, char *to, int offset, int len, int odd,
 	struct raw6_frag_vec *rfv = from;
 
 	if (offset < rfv->hlen) {
-		int copy;
-
-		offset = array_index_nospec(offset, rfv->hlen); /* needed? */
-		copy = min(rfv->hlen - offset, len);
+		int copy = min(rfv->hlen - offset, len);
 
 		if (skb->ip_summed == CHECKSUM_PARTIAL)
 			memcpy(to, rfv->c + offset, copy);
@@ -783,6 +774,7 @@ static int rawv6_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	memset(&fl6, 0, sizeof(fl6));
 
 	fl6.flowi6_mark = sk->sk_mark;
+	fl6.flowi6_uid = sk->sk_uid;
 
 	if (sin6) {
 		if (addr_len < SIN6_LEN_RFC2133)
@@ -927,8 +919,7 @@ out:
 	txopt_put(opt_to_free);
 	return err < 0 ? err : len;
 do_confirm:
-	if (msg->msg_flags & MSG_PROBE)
-		dst_confirm_neigh(dst, &fl6.daddr);
+	dst_confirm(dst);
 	if (!(msg->msg_flags & MSG_PROBE) || len)
 		goto back_from_confirm;
 	err = 0;

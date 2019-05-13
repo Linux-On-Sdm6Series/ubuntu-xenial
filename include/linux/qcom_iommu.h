@@ -17,13 +17,13 @@
 #include <linux/clk.h>
 #include <linux/list.h>
 #include <linux/regulator/consumer.h>
+#include <linux/platform_device.h>
+#include <linux/idr.h>
 #include <soc/qcom/socinfo.h>
-
-/* Private pgprot flag */
-#define IOMMU_PRIV	16
 
 extern pgprot_t     pgprot_kernel;
 extern struct bus_type msm_iommu_sec_bus_type;
+extern struct bus_type *msm_iommu_non_sec_bus_type;
 extern struct iommu_access_ops iommu_access_ops_v0;
 extern struct iommu_access_ops iommu_access_ops_v1;
 
@@ -33,8 +33,6 @@ extern struct iommu_access_ops iommu_access_ops_v1;
 
 /* Mask for the cache policy attribute */
 #define MSM_IOMMU_CP_MASK		0x03
-
-#define DOMAIN_ATTR_QCOM_COHERENT_HTW_DISABLE	DOMAIN_ATTR_MAX
 
 /* Maximum number of Machine IDs that we are allowing to be mapped to the same
  * context bank. The number of MIDs mapped to the same CB does not affect
@@ -94,12 +92,16 @@ struct msm_iommu_bfb_settings {
  * @phys_base:  IOMMU physical base address.
  * @ncb		The number of contexts on this IOMMU
  * @irq:	Interrupt number
- * @core:	The bus clock for this IOMMU hardware instance
- * @iface:	The clock for the IOMMU bus interconnect
+ * @clk:	The bus clock for this IOMMU hardware instance
+ * @pclk:	The clock for the IOMMU bus interconnect
+ * @aclk:	Alternate core clock for this IOMMU core, if any
+ * @aiclk:	Alternate interface clock for this IOMMU core, if any
  * @name:	Human-readable name of this IOMMU device
+ * @gdsc:	Regulator needed to power this HW block (v2 only)
  * @bfb_settings: Optional BFB performance tuning parameters
  * @dev:	Struct device this hardware instance is tied to
  * @list:	List head to link all iommus together
+ * @clk_reg_virt: Optional clock register virtual address.
  * @halt_enabled: Set to 1 if IOMMU halt is supported in the IOMMU, 0 otherwise.
  * @ctx_attach_count: Count of how many context are attached.
  * @bus_client  : Bus client needed to vote for bus bandwidth.
@@ -115,21 +117,28 @@ struct msm_iommu_drvdata {
 	void __iomem *glb_base;
 	void __iomem *cb_base;
 	void __iomem *smmu_local_base;
+	void __iomem *vbif_base;
 	int ncb;
 	int ttbr_split;
-	struct clk *core;
-	struct clk *iface;
+	struct clk *clk;
+	struct clk *pclk;
+	struct clk *aclk;
+	struct clk *aiclk;
 	const char *name;
+	struct regulator *gdsc;
+	struct regulator *alt_gdsc;
 	struct msm_iommu_bfb_settings *bfb_settings;
 	int sec_id;
 	struct device *dev;
 	struct list_head list;
+	void __iomem *clk_reg_virt;
 	int halt_enabled;
 	unsigned int ctx_attach_count;
 	unsigned int bus_client;
 	int needs_rem_spinlock;
 	int powered_on;
 	unsigned int model;
+	struct idr asid_idr;
 };
 
 /**
@@ -176,6 +185,8 @@ void iommu_resume(const struct msm_iommu_drvdata *iommu_drvdata);
 			the secure environment, false otherwise
  * @asid		ASID used with this context.
  * @attach_count	Number of time this context has been attached.
+ * @report_error_on_fault - true if error is returned back to master
+ * @dynamic		true if any dynamic domain is ever attached to this CB
  *
  * A msm_iommu_ctx_drvdata holds the driver data for a single context bank
  * within each IOMMU hardware instance
@@ -193,6 +204,9 @@ struct msm_iommu_ctx_drvdata {
 	int attach_count;
 	u32 sid_mask[MAX_NUM_SMR];
 	unsigned int n_sid_mask;
+	bool report_error_on_fault;
+	unsigned int prefetch_depth;
+	bool dynamic;
 };
 
 enum dump_reg {
@@ -277,7 +291,7 @@ struct remote_iommu_petersons_spinlock {
 	uint32_t turn;
 };
 
-#ifdef CONFIG_QCOM_IOMMU_V1
+#ifdef CONFIG_MSM_IOMMU
 void *msm_iommu_lock_initialize(void);
 void msm_iommu_mutex_lock(void);
 void msm_iommu_mutex_unlock(void);
@@ -300,17 +314,44 @@ static inline struct iommu_access_ops *msm_get_iommu_access_ops(void)
 }
 #endif
 
-#ifdef CONFIG_QCOM_IOMMU_V1
+#ifdef CONFIG_MSM_IOMMU_SYNC
+void msm_iommu_remote_p0_spin_lock(unsigned int need_lock);
+void msm_iommu_remote_p0_spin_unlock(unsigned int need_lock);
+
+#define msm_iommu_remote_lock_init() _msm_iommu_remote_spin_lock_init()
+#define msm_iommu_remote_spin_lock(need_lock) \
+				msm_iommu_remote_p0_spin_lock(need_lock)
+#define msm_iommu_remote_spin_unlock(need_lock) \
+				msm_iommu_remote_p0_spin_unlock(need_lock)
+#else
+#define msm_iommu_remote_lock_init()
+#define msm_iommu_remote_spin_lock(need_lock)
+#define msm_iommu_remote_spin_unlock(need_lock)
+#endif
+
+#ifdef CONFIG_MSM_IOMMU
 /*
  * Look up an IOMMU context device by its context name. NULL if none found.
  * Useful for testing and drivers that do not yet fully have IOMMU stuff in
  * their platform devices.
  */
 struct device *msm_iommu_get_ctx(const char *ctx_name);
+struct bus_type *msm_iommu_get_bus(struct device *dev);
+int msm_iommu_bus_register(void);
+void msm_access_control(void);
 #else
 static inline struct device *msm_iommu_get_ctx(const char *ctx_name)
 {
 	return NULL;
+}
+
+static inline struct bus_type *msm_iommu_get_bus(struct device *dev)
+{
+	return &platform_bus_type;
+}
+
+static inline void msm_access_control(void)
+{
 }
 #endif
 
@@ -377,7 +418,7 @@ u32 msm_iommu_get_nmrr(void);
 /* events for notifiers passed to msm_iommu_register_notify */
 #define TLB_SYNC_TIMEOUT 1
 
-#ifdef CONFIG_QCOM_IOMMU_V1
+#ifdef CONFIG_MSM_IOMMU_V1
 void msm_iommu_register_notify(struct notifier_block *nb);
 #else
 static inline void msm_iommu_register_notify(struct notifier_block *nb)

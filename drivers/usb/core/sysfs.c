@@ -141,9 +141,6 @@ static ssize_t speed_show(struct device *dev, struct device_attribute *attr,
 	case USB_SPEED_SUPER:
 		speed = "5000";
 		break;
-	case USB_SPEED_SUPER_PLUS:
-		speed = "10000";
-		break;
 	default:
 		speed = "unknown";
 	}
@@ -475,10 +472,7 @@ static ssize_t usb2_hardware_lpm_store(struct device *dev,
 
 	if (!ret) {
 		udev->usb2_hw_lpm_allowed = value;
-		if (value)
-			ret = usb_enable_usb2_hardware_lpm(udev);
-		else
-			ret = usb_disable_usb2_hardware_lpm(udev);
+		ret = usb_set_usb2_hardware_lpm(udev, value);
 	}
 
 	usb_unlock_device(udev);

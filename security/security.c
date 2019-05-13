@@ -433,7 +433,6 @@ int security_path_rmdir(struct path *dir, struct dentry *dentry)
 		return 0;
 	return call_int_hook(path_rmdir, 0, dir, dentry);
 }
-EXPORT_SYMBOL(security_path_rmdir);
 
 int security_path_unlink(struct path *dir, struct dentry *dentry)
 {
@@ -450,7 +449,6 @@ int security_path_symlink(struct path *dir, struct dentry *dentry,
 		return 0;
 	return call_int_hook(path_symlink, 0, dir, dentry, old_name);
 }
-EXPORT_SYMBOL(security_path_symlink);
 
 int security_path_link(struct dentry *old_dentry, struct path *new_dir,
 		       struct dentry *new_dentry)
@@ -459,7 +457,6 @@ int security_path_link(struct dentry *old_dentry, struct path *new_dir,
 		return 0;
 	return call_int_hook(path_link, 0, old_dentry, new_dir, new_dentry);
 }
-EXPORT_SYMBOL(security_path_link);
 
 int security_path_rename(struct path *old_dir, struct dentry *old_dentry,
 			 struct path *new_dir, struct dentry *new_dentry,
@@ -487,7 +484,6 @@ int security_path_truncate(struct path *path)
 		return 0;
 	return call_int_hook(path_truncate, 0, path);
 }
-EXPORT_SYMBOL(security_path_truncate);
 
 int security_path_chmod(struct path *path, umode_t mode)
 {
@@ -495,7 +491,6 @@ int security_path_chmod(struct path *path, umode_t mode)
 		return 0;
 	return call_int_hook(path_chmod, 0, path, mode);
 }
-EXPORT_SYMBOL(security_path_chmod);
 
 int security_path_chown(struct path *path, kuid_t uid, kgid_t gid)
 {
@@ -518,6 +513,14 @@ int security_inode_create(struct inode *dir, struct dentry *dentry, umode_t mode
 	return call_int_hook(inode_create, 0, dir, dentry, mode);
 }
 EXPORT_SYMBOL_GPL(security_inode_create);
+
+int security_inode_post_create(struct inode *dir, struct dentry *dentry,
+			       umode_t mode)
+{
+	if (unlikely(IS_PRIVATE(dir)))
+		return 0;
+	return call_int_hook(inode_post_create, 0, dir, dentry, mode);
+}
 
 int security_inode_link(struct dentry *old_dentry, struct inode *dir,
 			 struct dentry *new_dentry)
@@ -589,7 +592,6 @@ int security_inode_readlink(struct dentry *dentry)
 		return 0;
 	return call_int_hook(inode_readlink, 0, dentry);
 }
-EXPORT_SYMBOL(security_inode_readlink);
 
 int security_inode_follow_link(struct dentry *dentry, struct inode *inode,
 			       bool rcu)
@@ -605,7 +607,6 @@ int security_inode_permission(struct inode *inode, int mask)
 		return 0;
 	return call_int_hook(inode_permission, 0, inode, mask);
 }
-EXPORT_SYMBOL(security_inode_permission);
 
 int security_inode_setattr(struct dentry *dentry, struct iattr *attr)
 {
@@ -744,7 +745,6 @@ int security_file_permission(struct file *file, int mask)
 
 	return fsnotify_perm(file, mask);
 }
-EXPORT_SYMBOL(security_file_permission);
 
 int security_file_alloc(struct file *file)
 {
@@ -804,7 +804,6 @@ int security_mmap_file(struct file *file, unsigned long prot,
 		return ret;
 	return ima_file_mmap(file, prot);
 }
-EXPORT_SYMBOL(security_mmap_file);
 
 int security_mmap_addr(unsigned long addr)
 {
@@ -871,13 +870,6 @@ int security_cred_alloc_blank(struct cred *cred, gfp_t gfp)
 
 void security_cred_free(struct cred *cred)
 {
-	/*
-	 * There is a failure case in prepare_creds() that
-	 * may result in a call here with ->security being NULL.
-	 */
-	if (unlikely(cred->security == NULL))
-		return;
-
 	call_void_hook(cred_free, cred);
 }
 
@@ -1631,6 +1623,7 @@ struct security_hook_heads security_hook_heads = {
 	.inode_init_security =
 		LIST_HEAD_INIT(security_hook_heads.inode_init_security),
 	.inode_create =	LIST_HEAD_INIT(security_hook_heads.inode_create),
+	.inode_post_create = LIST_HEAD_INIT(security_hook_heads.inode_post_create),
 	.inode_link =	LIST_HEAD_INIT(security_hook_heads.inode_link),
 	.inode_unlink =	LIST_HEAD_INIT(security_hook_heads.inode_unlink),
 	.inode_symlink =
@@ -1690,6 +1683,7 @@ struct security_hook_heads security_hook_heads = {
 		LIST_HEAD_INIT(security_hook_heads.file_send_sigiotask),
 	.file_receive =	LIST_HEAD_INIT(security_hook_heads.file_receive),
 	.file_open =	LIST_HEAD_INIT(security_hook_heads.file_open),
+	.file_close = LIST_HEAD_INIT(security_hook_heads.file_close),
 	.task_create =	LIST_HEAD_INIT(security_hook_heads.task_create),
 	.task_free =	LIST_HEAD_INIT(security_hook_heads.task_free),
 	.cred_alloc_blank =

@@ -79,7 +79,6 @@
 #include <linux/delayacct.h>
 #include <linux/seq_file.h>
 #include <linux/pid_namespace.h>
-#include <linux/nospec.h>
 #include <linux/prctl.h>
 #include <linux/ptrace.h>
 #include <linux/tracehook.h>
@@ -173,15 +172,15 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 	seq_printf(m,
 		"State:\t%s\n"
 		"Tgid:\t%d\n"
-		"Ngid:\t%d\n"
 		"Pid:\t%d\n"
 		"PPid:\t%d\n"
 		"TracerPid:\t%d\n"
 		"Uid:\t%d\t%d\t%d\t%d\n"
 		"Gid:\t%d\t%d\t%d\t%d\n"
+		"Ngid:\t%d\n"
 		"FDSize:\t%d\nGroups:\t",
 		get_task_state(p),
-		tgid, ngid, pid_nr_ns(pid, ns), ppid, tpid,
+		tgid, pid_nr_ns(pid, ns), ppid, tpid,
 		from_kuid_munged(user_ns, cred->uid),
 		from_kuid_munged(user_ns, cred->euid),
 		from_kuid_munged(user_ns, cred->suid),
@@ -190,7 +189,7 @@ static inline void task_state(struct seq_file *m, struct pid_namespace *ns,
 		from_kgid_munged(user_ns, cred->egid),
 		from_kgid_munged(user_ns, cred->sgid),
 		from_kgid_munged(user_ns, cred->fsgid),
-		max_fds);
+		ngid, max_fds);
 
 	group_info = cred->group_info;
 	for (g = 0; g < group_info->ngroups; g++)
@@ -334,7 +333,7 @@ static inline void task_seccomp(struct seq_file *m, struct task_struct *p)
 #ifdef CONFIG_SECCOMP
 	seq_printf(m, "Seccomp:\t%d\n", p->seccomp.mode);
 #endif
-	seq_printf(m, "Speculation_Store_Bypass:\t");
+	seq_printf(m, "\nSpeculation_Store_Bypass:\t");
 	switch (arch_prctl_spec_ctrl_get(p, PR_SPEC_STORE_BYPASS)) {
 	case -EINVAL:
 		seq_printf(m, "unknown");
@@ -426,21 +425,9 @@ static int do_task_stat(struct seq_file *m, struct pid_namespace *ns,
 	mm = get_task_mm(task);
 	if (mm) {
 		vsize = task_vsize(mm);
-		/*
-		 * esp and eip are intentionally zeroed out.  There is no
-		 * non-racy way to read them without freezing the task.
-		 * Programs that need reliable values can use ptrace(2).
-		 *
-		 * The only exception is if the task is core dumping because
-		 * a program is not able to use ptrace(2) in that case. It is
-		 * safe because the task has stopped executing permanently.
-		 */
-		if (permitted && (task->flags & (PF_EXITING|PF_DUMPCORE))) {
-			if (try_get_task_stack(task)) {
-				eip = KSTK_EIP(task);
-				esp = KSTK_ESP(task);
-				put_task_stack(task);
-			}
+		if (permitted) {
+			eip = KSTK_EIP(task);
+			esp = KSTK_ESP(task);
 		}
 	}
 

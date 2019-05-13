@@ -58,8 +58,6 @@
 #include <linux/compat.h>
 #include <linux/user_namespace.h>
 
-#include <trace/events/fs.h>
-
 #include <asm/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
@@ -106,14 +104,6 @@ bool path_noexec(const struct path *path)
 	return (path->mnt->mnt_flags & MNT_NOEXEC) ||
 	       (path->mnt->mnt_sb->s_iflags & SB_I_NOEXEC);
 }
-EXPORT_SYMBOL(path_noexec);
-
-bool path_nosuid(const struct path *path)
-{
-	return !mnt_may_suid(path->mnt) ||
-	       (path->mnt->mnt_sb->s_iflags & SB_I_NOSUID);
-}
-EXPORT_SYMBOL(path_nosuid);
 
 #ifdef CONFIG_USELIB
 /*
@@ -201,7 +191,6 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 {
 	struct page *page;
 	int ret;
-	unsigned int gup_flags = FOLL_FORCE;
 
 #ifdef CONFIG_STACK_GROWSUP
 	if (write) {
@@ -210,12 +199,8 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 			return NULL;
 	}
 #endif
-
-	if (write)
-		gup_flags |= FOLL_WRITE;
-
-	ret = get_user_pages(current, bprm->mm, pos, 1, gup_flags,
-			&page, NULL);
+	ret = get_user_pages(current, bprm->mm, pos,
+			1, write, 1, &page, NULL);
 	if (ret <= 0)
 		return NULL;
 
@@ -313,7 +298,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	vma->vm_start = vma->vm_end - PAGE_SIZE;
 	vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
-	INIT_LIST_HEAD(&vma->anon_vma_chain);
+	INIT_VMA(vma);
 
 	err = insert_vm_struct(mm, vma);
 	if (err)
@@ -830,8 +815,6 @@ static struct file *do_open_execat(int fd, struct filename *name, int flags)
 	if (name->name[0] != '\0')
 		fsnotify_open(file);
 
-	trace_open_exec(name->name);
-
 out:
 	return file;
 
@@ -1094,14 +1077,15 @@ killed:
 	return -EAGAIN;
 }
 
-char *__get_task_comm(char *buf, size_t buf_size, struct task_struct *tsk)
+char *get_task_comm(char *buf, struct task_struct *tsk)
 {
+	/* buf must be at least sizeof(tsk->comm) in size */
 	task_lock(tsk);
-	strncpy(buf, tsk->comm, buf_size);
+	strncpy(buf, tsk->comm, sizeof(tsk->comm));
 	task_unlock(tsk);
 	return buf;
 }
-EXPORT_SYMBOL_GPL(__get_task_comm);
+EXPORT_SYMBOL_GPL(get_task_comm);
 
 /*
  * These functions flushes out all traces of the currently running executable
@@ -1169,8 +1153,10 @@ EXPORT_SYMBOL(flush_old_exec);
 void would_dump(struct linux_binprm *bprm, struct file *file)
 {
 	struct inode *inode = file_inode(file);
-	if (inode_permission(inode, MAY_READ) < 0) {
+
+	if (inode_permission2(file->f_path.mnt, inode, MAY_READ) < 0) {
 		struct user_namespace *old, *user_ns;
+
 		bprm->interp_flags |= BINPRM_FLAGS_ENFORCE_NONDUMP;
 
 		/* Ensure mm->user_ns contains the executable */
@@ -1309,7 +1295,6 @@ static void check_unsafe_exec(struct linux_binprm *bprm)
 {
 	struct task_struct *p = current, *t;
 	unsigned n_fs;
-	bool fs_recheck;
 
 	if (p->ptrace) {
 		if (ptracer_capable(p, current_user_ns()))
@@ -1325,8 +1310,6 @@ static void check_unsafe_exec(struct linux_binprm *bprm)
 	if (task_no_new_privs(current))
 		bprm->unsafe |= LSM_UNSAFE_NO_NEW_PRIVS;
 
-recheck:
-	fs_recheck = false;
 	t = p;
 	n_fs = 1;
 	spin_lock(&p->fs->lock);
@@ -1334,18 +1317,12 @@ recheck:
 	while_each_thread(p, t) {
 		if (t->fs == p->fs)
 			n_fs++;
-		if (t->flags & (PF_EXITING | PF_FORKNOEXEC))
-			fs_recheck  = true;
 	}
 	rcu_read_unlock();
 
-	if (p->fs->users > n_fs) {
-		if (fs_recheck) {
-			spin_unlock(&p->fs->lock);
-			goto recheck;
-		}
+	if (p->fs->users > n_fs)
 		bprm->unsafe |= LSM_UNSAFE_SHARE;
-	} else
+	else
 		p->fs->in_exec = 1;
 	spin_unlock(&p->fs->lock);
 }
@@ -1361,7 +1338,7 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
 	bprm->cred->euid = current_euid();
 	bprm->cred->egid = current_egid();
 
-	if (path_nosuid(&bprm->file->f_path))
+	if (bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID)
 		return;
 
 	if (task_no_new_privs(current))
@@ -1663,7 +1640,7 @@ static int do_execveat_common(int fd, struct filename *filename,
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
 	acct_update_integrals(current);
-	task_numa_free(current, false);
+	task_numa_free(current);
 	free_bprm(bprm);
 	kfree(pathbuf);
 	putname(filename);

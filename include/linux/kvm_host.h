@@ -143,15 +143,13 @@ static inline bool is_error_page(struct page *page)
 #define KVM_REQ_HV_CRASH          27
 #define KVM_REQ_IOAPIC_EOI_EXIT   28
 #define KVM_REQ_HV_RESET          29
-#define KVM_REQ_HV_EXIT           30
-#define KVM_REQ_HV_STIMER         31
 
 #define KVM_USERSPACE_IRQ_SOURCE_ID		0
 #define KVM_IRQFD_RESAMPLE_IRQ_SOURCE_ID	1
 
 extern struct kmem_cache *kvm_vcpu_cache;
 
-extern struct mutex kvm_lock;
+extern spinlock_t kvm_lock;
 extern struct list_head vm_list;
 
 struct kvm_io_range {
@@ -320,11 +318,6 @@ struct kvm_s390_adapter_int {
 	u32 adapter_id;
 };
 
-struct kvm_hv_sint {
-	u32 vcpu;
-	u32 sint;
-};
-
 struct kvm_kernel_irq_routing_entry {
 	u32 gsi;
 	u32 type;
@@ -338,7 +331,6 @@ struct kvm_kernel_irq_routing_entry {
 		} irqchip;
 		struct msi_msg msi;
 		struct kvm_s390_adapter_int adapter;
-		struct kvm_hv_sint hv_sint;
 	};
 	struct hlist_node link;
 };
@@ -451,8 +443,6 @@ struct kvm {
 
 #define vcpu_debug(vcpu, fmt, ...)					\
 	kvm_debug("vcpu%i " fmt, (vcpu)->vcpu_id, ## __VA_ARGS__)
-#define vcpu_err(vcpu, fmt, ...)					\
-	kvm_err("vcpu%i " fmt, (vcpu)->vcpu_id, ## __VA_ARGS__)
 
 static inline struct kvm_vcpu *kvm_get_vcpu(struct kvm *kvm, int i)
 {
@@ -494,12 +484,12 @@ void vcpu_put(struct kvm_vcpu *vcpu);
 
 #ifdef __KVM_HAVE_IOAPIC
 void kvm_vcpu_request_scan_ioapic(struct kvm *kvm);
-void kvm_arch_post_irq_routing_update(struct kvm *kvm);
+void kvm_arch_irq_routing_update(struct kvm *kvm);
 #else
 static inline void kvm_vcpu_request_scan_ioapic(struct kvm *kvm)
 {
 }
-static inline void kvm_arch_post_irq_routing_update(struct kvm *kvm)
+static inline void kvm_arch_irq_routing_update(struct kvm *kvm)
 {
 }
 #endif
@@ -1101,7 +1091,6 @@ static inline void kvm_irq_routing_update(struct kvm *kvm)
 {
 }
 #endif
-void kvm_arch_irq_routing_update(struct kvm *kvm);
 
 static inline int kvm_ioeventfd(struct kvm *kvm, struct kvm_ioeventfd *args)
 {
@@ -1205,11 +1194,5 @@ void kvm_arch_irq_bypass_start(struct irq_bypass_consumer *);
 int kvm_arch_update_irqfd_routing(struct kvm *kvm, unsigned int host_irq,
 				  uint32_t guest_irq, bool set);
 #endif /* CONFIG_HAVE_KVM_IRQ_BYPASS */
-
-typedef int (*kvm_vm_thread_fn_t)(struct kvm *kvm, uintptr_t data);
-
-int kvm_vm_create_worker_thread(struct kvm *kvm, kvm_vm_thread_fn_t thread_fn,
-				uintptr_t data, const char *name,
-				struct task_struct **thread_ptr);
 
 #endif

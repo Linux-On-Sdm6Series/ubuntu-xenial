@@ -24,7 +24,6 @@
 #include <linux/memblock.h>
 #include <linux/of_fdt.h>
 #include <linux/smp.h>
-#include <linux/serial_core.h>
 
 #include <asm/cputype.h>
 #include <asm/cpu_ops.h>
@@ -142,14 +141,10 @@ static int __init acpi_fadt_sanity_check(void)
 	 */
 	if (table->revision < 5 ||
 	   (table->revision == 5 && fadt->minor_revision < 1)) {
-		pr_err(FW_BUG "Unsupported FADT revision %d.%d, should be 5.1+\n",
+		pr_err("Unsupported FADT revision %d.%d, should be 5.1+\n",
 		       table->revision, fadt->minor_revision);
-
-		if (!fadt->arm_boot_flags) {
-			ret = -EINVAL;
-			goto out;
-		}
-		pr_err("FADT has ARM boot flags set, assuming 5.1\n");
+		ret = -EINVAL;
+		goto out;
 	}
 
 	if (!(fadt->flags & ACPI_FADT_HW_REDUCED)) {
@@ -194,7 +189,7 @@ void __init acpi_boot_table_init(void)
 	 */
 	if (param_acpi_off ||
 	    (!param_acpi_force && of_scan_flat_dt(dt_scan_depth1_nodes, NULL)))
-		goto done;
+		return;
 
 	/*
 	 * ACPI is disabled at this point. Enable it in order to parse
@@ -213,14 +208,6 @@ void __init acpi_boot_table_init(void)
 		pr_err("Failed to init ACPI tables\n");
 		if (!param_acpi_force)
 			disable_acpi();
-	}
-
-done:
-	if (acpi_disabled) {
-		if (earlycon_init_is_deferred)
-			early_init_dt_scan_chosen_stdout();
-	} else {
-		parse_spcr(earlycon_init_is_deferred);
 	}
 }
 

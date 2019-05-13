@@ -76,9 +76,6 @@ static const struct {
 /* HDMI N/CTS table */
 #define TMDS_297M 297000
 #define TMDS_296M 296703
-#define TMDS_594M 594000
-#define TMDS_593M 593407
-
 static const struct {
 	int sample_rate;
 	int clock;
@@ -99,20 +96,6 @@ static const struct {
 	{ 176400, TMDS_297M, 18816, 247500 },
 	{ 192000, TMDS_296M, 23296, 281250 },
 	{ 192000, TMDS_297M, 20480, 247500 },
-	{ 44100, TMDS_593M, 8918, 937500 },
-	{ 44100, TMDS_594M, 9408, 990000 },
-	{ 48000, TMDS_593M, 5824, 562500 },
-	{ 48000, TMDS_594M, 6144, 594000 },
-	{ 32000, TMDS_593M, 5824, 843750 },
-	{ 32000, TMDS_594M, 3072, 445500 },
-	{ 88200, TMDS_593M, 17836, 937500 },
-	{ 88200, TMDS_594M, 18816, 990000 },
-	{ 96000, TMDS_593M, 11648, 562500 },
-	{ 96000, TMDS_594M, 12288, 594000 },
-	{ 176400, TMDS_593M, 35672, 937500 },
-	{ 176400, TMDS_594M, 37632, 990000 },
-	{ 192000, TMDS_593M, 23296, 562500 },
-	{ 192000, TMDS_594M, 24576, 594000 },
 };
 
 /* get AUD_CONFIG_PIXEL_CLOCK_HDMI_* value for mode */
@@ -520,7 +503,6 @@ void intel_audio_codec_enable(struct intel_encoder *intel_encoder)
 	struct i915_audio_component *acomp = dev_priv->audio_component;
 	struct intel_digital_port *intel_dig_port = enc_to_dig_port(encoder);
 	enum port port = intel_dig_port->port;
-	enum pipe pipe = -1;
 
 	connector = drm_select_eld(encoder);
 	if (!connector)
@@ -543,13 +525,8 @@ void intel_audio_codec_enable(struct intel_encoder *intel_encoder)
 		dev_priv->display.audio_codec_enable(connector, intel_encoder,
 						     adjusted_mode);
 
-	mutex_lock(&dev_priv->av_mutex);
-	intel_dig_port->audio_connector = connector;
-	mutex_unlock(&dev_priv->av_mutex);
-
 	if (acomp && acomp->audio_ops && acomp->audio_ops->pin_eld_notify)
-		acomp->audio_ops->pin_eld_notify(acomp->audio_ops->audio_ptr,
-						(int) port, (int) pipe);
+		acomp->audio_ops->pin_eld_notify(acomp->audio_ops->audio_ptr, (int) port);
 }
 
 /**
@@ -567,18 +544,12 @@ void intel_audio_codec_disable(struct intel_encoder *intel_encoder)
 	struct i915_audio_component *acomp = dev_priv->audio_component;
 	struct intel_digital_port *intel_dig_port = enc_to_dig_port(encoder);
 	enum port port = intel_dig_port->port;
-	enum pipe pipe = -1;
 
 	if (dev_priv->display.audio_codec_disable)
 		dev_priv->display.audio_codec_disable(intel_encoder);
 
-	mutex_lock(&dev_priv->av_mutex);
-	intel_dig_port->audio_connector = NULL;
-	mutex_unlock(&dev_priv->av_mutex);
-
 	if (acomp && acomp->audio_ops && acomp->audio_ops->pin_eld_notify)
-		acomp->audio_ops->pin_eld_notify(acomp->audio_ops->audio_ptr,
-						(int) port, (int) pipe);
+		acomp->audio_ops->pin_eld_notify(acomp->audio_ops->audio_ptr, (int) port);
 }
 
 /**
@@ -735,39 +706,6 @@ static int i915_audio_component_sync_audio_rate(struct device *dev,
 	return 0;
 }
 
-static int i915_audio_component_get_eld(struct device *dev, int port,
-					bool *enabled,
-					unsigned char *buf, int max_bytes)
-{
-	struct drm_i915_private *dev_priv = dev_to_i915(dev);
-	struct drm_device *drm_dev = dev_priv->dev;
-	struct intel_encoder *intel_encoder;
-	struct intel_digital_port *intel_dig_port;
-	const u8 *eld;
-	int ret = -EINVAL;
-
-	mutex_lock(&dev_priv->av_mutex);
-	for_each_intel_encoder(drm_dev, intel_encoder) {
-		if (intel_encoder->type != INTEL_OUTPUT_DISPLAYPORT &&
-		    intel_encoder->type != INTEL_OUTPUT_HDMI)
-			continue;
-		intel_dig_port = enc_to_dig_port(&intel_encoder->base);
-		if (port == intel_dig_port->port) {
-			ret = 0;
-			*enabled = intel_dig_port->audio_connector != NULL;
-			if (!*enabled)
-				break;
-			eld = intel_dig_port->audio_connector->eld;
-			ret = drm_eld_size(eld);
-			memcpy(buf, eld, min(max_bytes, ret));
-			break;
-		}
-	}
-
-	mutex_unlock(&dev_priv->av_mutex);
-	return ret;
-}
-
 static const struct i915_audio_component_ops i915_audio_component_ops = {
 	.owner		= THIS_MODULE,
 	.get_power	= i915_audio_component_get_power,
@@ -775,7 +713,6 @@ static const struct i915_audio_component_ops i915_audio_component_ops = {
 	.codec_wake_override = i915_audio_component_codec_wake_override,
 	.get_cdclk_freq	= i915_audio_component_get_cdclk_freq,
 	.sync_audio_rate = i915_audio_component_sync_audio_rate,
-	.get_eld	= i915_audio_component_get_eld,
 };
 
 static int i915_audio_component_bind(struct device *i915_dev,

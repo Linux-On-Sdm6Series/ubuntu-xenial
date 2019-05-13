@@ -1,21 +1,22 @@
-# Makefile for Qualcomm vidc driver
+ccflags-y += -I$(srctree)/drivers/media/platform/msm/vidc/
 
-ccflags-y += -Idrivers/media/platform/msm/vidc
-vidc-objs += \
-		msm_v4l2_vidc.o \
-		msm_internal-buffers.o \
-		msm_vidc_common.o \
-		msm_vdec.o \
-		msm_vdec-ctrls.o \
-		msm_venc.o \
-		msm_venc-ctrls.o \
-		msm_smem.o \
-		msm_vidc_debug.o \
-		msm_vidc_resources.o \
-		msm_vidc_load.o \
-		hfi/venus/venus_hfi.o \
-		hfi/hfi_response_handler.o \
-		hfi/hfi_packetization.o \
-		hfi/vidc_hfi.o \
+msm-vidc-objs := msm_v4l2_vidc.o \
+                                msm_vidc_common.o \
+                                msm_vidc.o \
+                                msm_vdec.o \
+                                msm_venc.o \
+                                msm_smem.o \
+                                msm_vidc_debug.o \
+                                msm_vidc_res_parse.o \
+                                venus_hfi.o \
+                                hfi_response_handler.o \
+                                hfi_packetization.o \
+                                vidc_hfi.o \
+                                venus_boot.o \
+                                msm_vidc_dcvs.o
 
-obj-$(CONFIG_MSM_VIDC_V4L2) += vidc.o
+obj-$(CONFIG_MSM_VIDC_V4L2) := msm-vidc.o
+
+obj-$(CONFIG_MSM_VIDC_V4L2) += governors/
+
+obj-$(CONFIG_MSM_VIDC_VMEM) += vmem/

@@ -281,17 +281,6 @@ struct se_session *transport_init_session_tags(unsigned int tag_num,
 	struct se_session *se_sess;
 	int rc;
 
-	if (tag_num != 0 && !tag_size) {
-		pr_err("init_session_tags called with percpu-ida tag_num:"
-		       " %u, but zero tag_size\n", tag_num);
-		return ERR_PTR(-EINVAL);
-	}
-	if (!tag_num && tag_size) {
-		pr_err("init_session_tags called with percpu-ida tag_size:"
-		       " %u, but zero tag_num\n", tag_size);
-		return ERR_PTR(-EINVAL);
-	}
-
 	se_sess = transport_init_session(sup_prot_ops);
 	if (IS_ERR(se_sess))
 		return se_sess;
@@ -317,7 +306,6 @@ void __transport_register_session(
 {
 	const struct target_core_fabric_ops *tfo = se_tpg->se_tpg_tfo;
 	unsigned char buf[PR_REG_ISID_LEN];
-	unsigned long flags;
 
 	se_sess->se_tpg = se_tpg;
 	se_sess->fabric_sess_ptr = fabric_sess_ptr;
@@ -354,7 +342,7 @@ void __transport_register_session(
 			se_sess->sess_bin_isid = get_unaligned_be64(&buf[0]);
 		}
 
-		spin_lock_irqsave(&se_nacl->nacl_sess_lock, flags);
+		spin_lock_irq(&se_nacl->nacl_sess_lock);
 		/*
 		 * The se_nacl->nacl_sess pointer will be set to the
 		 * last active I_T Nexus for each struct se_node_acl.
@@ -363,7 +351,7 @@ void __transport_register_session(
 
 		list_add_tail(&se_sess->sess_acl_list,
 			      &se_nacl->acl_sess_list);
-		spin_unlock_irqrestore(&se_nacl->nacl_sess_lock, flags);
+		spin_unlock_irq(&se_nacl->nacl_sess_lock);
 	}
 	list_add_tail(&se_sess->sess_list, &se_tpg->tpg_sess_list);
 
@@ -385,51 +373,6 @@ void transport_register_session(
 	spin_unlock_irqrestore(&se_tpg->session_lock, flags);
 }
 EXPORT_SYMBOL(transport_register_session);
-
-struct se_session *
-target_alloc_session(struct se_portal_group *tpg,
-		     unsigned int tag_num, unsigned int tag_size,
-		     enum target_prot_op prot_op,
-		     const char *initiatorname, void *private,
-		     int (*callback)(struct se_portal_group *,
-				     struct se_session *, void *))
-{
-	struct se_session *sess;
-
-	/*
-	 * If the fabric driver is using percpu-ida based pre allocation
-	 * of I/O descriptor tags, go ahead and perform that setup now..
-	 */
-	if (tag_num != 0)
-		sess = transport_init_session_tags(tag_num, tag_size, prot_op);
-	else
-		sess = transport_init_session(prot_op);
-
-	if (IS_ERR(sess))
-		return sess;
-
-	sess->se_node_acl = core_tpg_check_initiator_node_acl(tpg,
-					(unsigned char *)initiatorname);
-	if (!sess->se_node_acl) {
-		transport_free_session(sess);
-		return ERR_PTR(-EACCES);
-	}
-	/*
-	 * Go ahead and perform any remaining fabric setup that is
-	 * required before transport_register_session().
-	 */
-	if (callback != NULL) {
-		int rc = callback(tpg, sess, private);
-		if (rc) {
-			transport_free_session(sess);
-			return ERR_PTR(rc);
-		}
-	}
-
-	transport_register_session(tpg, sess->se_node_acl, sess, private);
-	return sess;
-}
-EXPORT_SYMBOL(target_alloc_session);
 
 static void target_release_session(struct kref *kref)
 {
@@ -806,10 +749,7 @@ void target_complete_cmd(struct se_cmd *cmd, u8 scsi_status)
 	cmd->transport_state |= (CMD_T_COMPLETE | CMD_T_ACTIVE);
 	spin_unlock_irqrestore(&cmd->t_state_lock, flags);
 
-	if (cmd->se_cmd_flags & SCF_USE_CPUID)
-		queue_work_on(cmd->cpuid, target_completion_wq, &cmd->work);
-	else
-		queue_work(target_completion_wq, &cmd->work);
+	queue_work(target_completion_wq, &cmd->work);
 }
 EXPORT_SYMBOL(target_complete_cmd);
 
@@ -1518,12 +1458,6 @@ int target_submit_cmd_map_sgls(struct se_cmd *se_cmd, struct se_session *se_sess
 	 */
 	transport_init_se_cmd(se_cmd, se_tpg->se_tpg_tfo, se_sess,
 				data_length, data_dir, task_attr, sense);
-
-	if (flags & TARGET_SCF_USE_CPUID)
-		se_cmd->se_cmd_flags |= SCF_USE_CPUID;
-	else
-		se_cmd->cpuid = WORK_CPU_UNBOUND;
-
 	if (flags & TARGET_SCF_UNKNOWN_SIZE)
 		se_cmd->unknown_data_length = 1;
 	/*

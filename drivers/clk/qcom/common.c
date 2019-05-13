@@ -1,5 +1,7 @@
 /*
- * Copyright (c) 2013-2014, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2013-2014, 2016-2017,
+ *
+ * The Linux Foundation. All rights reserved.
  *
  * This software is licensed under the terms of the GNU General Public
  * License version 2, as published by the Free Software Foundation, and
@@ -11,6 +13,7 @@
  * GNU General Public License for more details.
  */
 
+#include <linux/clk.h>
 #include <linux/export.h>
 #include <linux/module.h>
 #include <linux/regmap.h>
@@ -36,9 +39,6 @@ struct freq_tbl *qcom_find_freq(const struct freq_tbl *f, unsigned long rate)
 {
 	if (!f)
 		return NULL;
-
-	if (!f->freq)
-		return f;
 
 	for (; f->freq; f++)
 		if (rate <= f->freq)
@@ -122,7 +122,6 @@ static int _qcom_cc_register_board_clk(struct device *dev, const char *path,
 		fixed->hw.init = &init_data;
 
 		init_data.name = path;
-		init_data.flags = CLK_IS_ROOT;
 		init_data.ops = &clk_fixed_rate_ops;
 
 		clk = devm_clk_register(dev, &fixed->hw);
@@ -181,17 +180,20 @@ EXPORT_SYMBOL_GPL(qcom_cc_register_sleep_clk);
 int qcom_cc_really_probe(struct platform_device *pdev,
 			 const struct qcom_cc_desc *desc, struct regmap *regmap)
 {
-	int i, ret;
+	int i = 0, ret, j = 0;
 	struct device *dev = &pdev->dev;
 	struct clk *clk;
 	struct clk_onecell_data *data;
 	struct clk **clks;
 	struct qcom_reset_controller *reset;
 	struct qcom_cc *cc;
+	struct gdsc_desc *scd;
 	size_t num_clks = desc->num_clks;
 	struct clk_regmap **rclks = desc->clks;
+	struct clk_hw **hw_clks = desc->hwclks;
 
-	cc = devm_kzalloc(dev, sizeof(*cc) + sizeof(*clks) * num_clks,
+	cc = devm_kzalloc(dev, sizeof(*cc) + sizeof(*clks) *
+			(num_clks + desc->num_hwclks),
 			  GFP_KERNEL);
 	if (!cc)
 		return -ENOMEM;
@@ -199,24 +201,43 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 	clks = cc->clks;
 	data = &cc->data;
 	data->clks = clks;
-	data->clk_num = num_clks;
+	data->clk_num = num_clks + desc->num_hwclks;
 
-	for (i = 0; i < num_clks; i++) {
-		if (!rclks[i]) {
+	for (i = 0; i < desc->num_hwclks; i++) {
+		if (!hw_clks[i]) {
 			clks[i] = ERR_PTR(-ENOENT);
 			continue;
 		}
-		clk = devm_clk_register_regmap(dev, rclks[i]);
+		clk = devm_clk_register(dev, hw_clks[i]);
 		if (IS_ERR(clk))
 			return PTR_ERR(clk);
 		clks[i] = clk;
+		pr_debug("Index for hw_clocks %d added %s\n", i,
+							__clk_get_name(clk));
+	}
+
+	for (j = i; j < num_clks; j++) {
+		if (!rclks[j]) {
+			clks[j] = ERR_PTR(-ENOENT);
+			continue;
+		}
+		clk = devm_clk_register_regmap(dev, rclks[j]);
+		if (IS_ERR(clk))
+			return PTR_ERR(clk);
+		clks[j] = clk;
+		pr_debug("Index for Regmap clocks %d added %s\n", j,
+							__clk_get_name(clk));
 	}
 
 	ret = of_clk_add_provider(dev->of_node, of_clk_src_onecell_get, data);
 	if (ret)
 		return ret;
 
-	devm_add_action(dev, qcom_cc_del_clk_provider, pdev->dev.of_node);
+	ret = devm_add_action_or_reset(dev, qcom_cc_del_clk_provider,
+				       pdev->dev.of_node);
+
+	if (ret)
+		return ret;
 
 	reset = &cc->reset;
 	reset->rcdev.of_node = dev->of_node;
@@ -230,17 +251,27 @@ int qcom_cc_really_probe(struct platform_device *pdev,
 	if (ret)
 		return ret;
 
-	devm_add_action(dev, qcom_cc_reset_unregister, &reset->rcdev);
+	ret = devm_add_action_or_reset(dev, qcom_cc_reset_unregister,
+				       &reset->rcdev);
+
+	if (ret)
+		return ret;
 
 	if (desc->gdscs && desc->num_gdscs) {
-		ret = gdsc_register(dev, desc->gdscs, desc->num_gdscs,
-				    &reset->rcdev, regmap);
+		scd = devm_kzalloc(dev, sizeof(*scd), GFP_KERNEL);
+		if (!scd)
+			return -ENOMEM;
+		scd->dev = dev;
+		scd->scs = desc->gdscs;
+		scd->num = desc->num_gdscs;
+		ret = gdsc_register(scd, &reset->rcdev, regmap);
+		if (ret)
+			return ret;
+		ret = devm_add_action_or_reset(dev, qcom_cc_gdsc_unregister,
+					       scd);
 		if (ret)
 			return ret;
 	}
-
-	devm_add_action(dev, qcom_cc_gdsc_unregister, dev);
-
 
 	return 0;
 }

@@ -46,8 +46,6 @@ MODULE_VERSION(DRV_MODULE_VERSION);
 #define QED_FW_FILE_NAME	\
 	"qed/qed_init_values_zipped-" FW_FILE_VERSION ".bin"
 
-MODULE_FIRMWARE(QED_FW_FILE_NAME);
-
 static int __init qed_init(void)
 {
 	pr_notice("qed_init called\n");
@@ -1126,9 +1124,9 @@ static int qed_drain(struct qed_dev *cdev)
 			return -EBUSY;
 		}
 		rc = qed_mcp_drain(hwfn, ptt);
-		qed_ptt_release(hwfn, ptt);
 		if (rc)
 			return rc;
+		qed_ptt_release(hwfn, ptt);
 	}
 
 	return 0;

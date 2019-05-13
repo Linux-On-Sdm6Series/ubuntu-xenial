@@ -5,6 +5,8 @@
 /* error code which can't be mistaken for valid address */
 #define EFI_ERROR	(~0UL)
 
+extern int __pure nokaslr(void);
+
 void efi_char16_printk(efi_system_table_t *, efi_char16_t *);
 
 efi_status_t efi_open_volume(efi_system_table_t *sys_table_arg, void *__image,
@@ -45,5 +47,9 @@ void efi_get_virtmap(efi_memory_desc_t *memory_map, unsigned long map_size,
 
 efi_status_t efi_get_random_bytes(efi_system_table_t *sys_table,
 				  unsigned long size, u8 *out);
+
+efi_status_t efi_random_alloc(efi_system_table_t *sys_table_arg,
+			      unsigned long size, unsigned long align,
+			      unsigned long *addr, unsigned long random_seed);
 
 #endif

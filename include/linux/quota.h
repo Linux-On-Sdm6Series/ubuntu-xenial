@@ -179,16 +179,6 @@ static inline struct kqid make_kqid_projid(kprojid_t projid)
 	return kqid;
 }
 
-/**
- *	qid_has_mapping - Report if a qid maps into a user namespace.
- *	@ns:  The user namespace to see if a value maps into.
- *	@qid: The kernel internal quota identifier to test.
- */
-static inline bool qid_has_mapping(struct user_namespace *ns, struct kqid qid)
-{
-	return from_kqid(ns, qid) != (qid_t) -1;
-}
-
 
 extern spinlock_t dq_data_lock;
 
@@ -263,7 +253,7 @@ enum {
 };
 
 struct dqstats {
-	unsigned long stat[_DQST_DQSTAT_LAST];
+	int stat[_DQST_DQSTAT_LAST];
 	struct percpu_counter counter[_DQST_DQSTAT_LAST];
 };
 

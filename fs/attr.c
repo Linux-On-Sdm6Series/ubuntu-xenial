@@ -16,30 +16,6 @@
 #include <linux/evm.h>
 #include <linux/ima.h>
 
-static bool chown_ok(const struct inode *inode, kuid_t uid)
-{
-	if (uid_eq(current_fsuid(), inode->i_uid) &&
-	    uid_eq(uid, inode->i_uid))
-		return true;
-	if (capable_wrt_inode_uidgid(inode, CAP_CHOWN))
-		return true;
-	if (ns_capable(inode->i_sb->s_user_ns, CAP_CHOWN))
-		return true;
-	return false;
-}
-
-static bool chgrp_ok(const struct inode *inode, kgid_t gid)
-{
-	if (uid_eq(current_fsuid(), inode->i_uid) &&
-	    (in_group_p(gid) || gid_eq(gid, inode->i_gid)))
-		return true;
-	if (capable_wrt_inode_uidgid(inode, CAP_CHOWN))
-		return true;
-	if (ns_capable(inode->i_sb->s_user_ns, CAP_CHOWN))
-		return true;
-	return false;
-}
-
 /**
  * inode_change_ok - check if attribute changes to an inode are allowed
  * @inode:	inode to check
@@ -71,11 +47,17 @@ int inode_change_ok(const struct inode *inode, struct iattr *attr)
 		return 0;
 
 	/* Make sure a caller can chown. */
-	if ((ia_valid & ATTR_UID) && !chown_ok(inode, attr->ia_uid))
+	if ((ia_valid & ATTR_UID) &&
+	    (!uid_eq(current_fsuid(), inode->i_uid) ||
+	     !uid_eq(attr->ia_uid, inode->i_uid)) &&
+	    !capable_wrt_inode_uidgid(inode, CAP_CHOWN))
 		return -EPERM;
 
 	/* Make sure caller can chgrp. */
-	if ((ia_valid & ATTR_GID) && !chgrp_ok(inode, attr->ia_gid))
+	if ((ia_valid & ATTR_GID) &&
+	    (!uid_eq(current_fsuid(), inode->i_uid) ||
+	    (!in_group_p(attr->ia_gid) && !gid_eq(attr->ia_gid, inode->i_gid))) &&
+	    !capable_wrt_inode_uidgid(inode, CAP_CHOWN))
 		return -EPERM;
 
 	/* Make sure a caller can chmod. */
@@ -205,7 +187,7 @@ EXPORT_SYMBOL(setattr_copy);
  * the file open for write, as there can be no conflicting delegation in
  * that case.
  */
-int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **delegated_inode)
+int notify_change2(struct vfsmount *mnt, struct dentry * dentry, struct iattr * attr, struct inode **delegated_inode)
 {
 	struct inode *inode = dentry->d_inode;
 	umode_t mode = inode->i_mode;
@@ -229,7 +211,7 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 			return -EPERM;
 
 		if (!inode_owner_or_capable(inode)) {
-			error = inode_permission(inode, MAY_WRITE);
+			error = inode_permission2(mnt, inode, MAY_WRITE);
 			if (error)
 				return error;
 		}
@@ -288,25 +270,6 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 	if (!(attr->ia_valid & ~(ATTR_KILL_SUID | ATTR_KILL_SGID)))
 		return 0;
 
-	/*
-	 * Verify that uid/gid changes are valid in the target
-	 * namespace of the superblock.
-	 */
-	if (ia_valid & ATTR_UID &&
-	    !kuid_has_mapping(inode->i_sb->s_user_ns, attr->ia_uid))
-		return -EOVERFLOW;
-	if (ia_valid & ATTR_GID &&
-	    !kgid_has_mapping(inode->i_sb->s_user_ns, attr->ia_gid))
-		return -EOVERFLOW;
-
-	/* Don't allow modifications of files with invalid uids or
-	 * gids unless those uids & gids are being made valid.
-	 */
-	if (!(ia_valid & ATTR_UID) && !uid_valid(inode->i_uid))
-		return -EOVERFLOW;
-	if (!(ia_valid & ATTR_GID) && !gid_valid(inode->i_gid))
-		return -EOVERFLOW;
-
 	error = security_inode_setattr(dentry, attr);
 	if (error)
 		return error;
@@ -314,7 +277,9 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 	if (error)
 		return error;
 
-	if (inode->i_op->setattr)
+	if (mnt && inode->i_op->setattr2)
+		error = inode->i_op->setattr2(mnt, dentry, attr);
+	else if (inode->i_op->setattr)
 		error = inode->i_op->setattr(dentry, attr);
 	else
 		error = simple_setattr(dentry, attr);
@@ -326,5 +291,11 @@ int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **de
 	}
 
 	return error;
+}
+EXPORT_SYMBOL(notify_change2);
+
+int notify_change(struct dentry * dentry, struct iattr * attr, struct inode **delegated_inode)
+{
+	return notify_change2(NULL, dentry, attr, delegated_inode);
 }
 EXPORT_SYMBOL(notify_change);

@@ -400,37 +400,44 @@ static const struct intel_device_info intel_broxton_info = {
  * and subvendor IDs, we need it to come before the more general IVB
  * PCI ID matches, otherwise we'll use the wrong info struct above.
  */
-static const struct pci_device_id pciidlist[] = {
-	INTEL_I830_IDS(&intel_i830_info),
-	INTEL_I845G_IDS(&intel_845g_info),
-	INTEL_I85X_IDS(&intel_i85x_info),
-	INTEL_I865G_IDS(&intel_i865g_info),
-	INTEL_I915G_IDS(&intel_i915g_info),
-	INTEL_I915GM_IDS(&intel_i915gm_info),
-	INTEL_I945G_IDS(&intel_i945g_info),
-	INTEL_I945GM_IDS(&intel_i945gm_info),
-	INTEL_I965G_IDS(&intel_i965g_info),
-	INTEL_G33_IDS(&intel_g33_info),
-	INTEL_I965GM_IDS(&intel_i965gm_info),
-	INTEL_GM45_IDS(&intel_gm45_info),
-	INTEL_G45_IDS(&intel_g45_info),
-	INTEL_PINEVIEW_IDS(&intel_pineview_info),
-	INTEL_IRONLAKE_D_IDS(&intel_ironlake_d_info),
-	INTEL_IRONLAKE_M_IDS(&intel_ironlake_m_info),
-	INTEL_SNB_D_IDS(&intel_sandybridge_d_info),
-	INTEL_SNB_M_IDS(&intel_sandybridge_m_info),
-	INTEL_IVB_Q_IDS(&intel_ivybridge_q_info), /* must be first IVB */
-	INTEL_IVB_M_IDS(&intel_ivybridge_m_info),
-	INTEL_IVB_D_IDS(&intel_ivybridge_d_info),
-	INTEL_HSW_D_IDS(&intel_haswell_d_info),
-	INTEL_HSW_M_IDS(&intel_haswell_m_info),
-	INTEL_VLV_M_IDS(&intel_valleyview_m_info),
-	INTEL_VLV_D_IDS(&intel_valleyview_d_info),
-	INTEL_BDW_GT12M_IDS(&intel_broadwell_m_info),
-	INTEL_BDW_GT12D_IDS(&intel_broadwell_d_info),
-	INTEL_BDW_GT3M_IDS(&intel_broadwell_gt3m_info),
-	INTEL_BDW_GT3D_IDS(&intel_broadwell_gt3d_info),
-	INTEL_CHV_IDS(&intel_cherryview_info),
+#define INTEL_PCI_IDS \
+	INTEL_I830_IDS(&intel_i830_info),	\
+	INTEL_I845G_IDS(&intel_845g_info),	\
+	INTEL_I85X_IDS(&intel_i85x_info),	\
+	INTEL_I865G_IDS(&intel_i865g_info),	\
+	INTEL_I915G_IDS(&intel_i915g_info),	\
+	INTEL_I915GM_IDS(&intel_i915gm_info),	\
+	INTEL_I945G_IDS(&intel_i945g_info),	\
+	INTEL_I945GM_IDS(&intel_i945gm_info),	\
+	INTEL_I965G_IDS(&intel_i965g_info),	\
+	INTEL_G33_IDS(&intel_g33_info),		\
+	INTEL_I965GM_IDS(&intel_i965gm_info),	\
+	INTEL_GM45_IDS(&intel_gm45_info), 	\
+	INTEL_G45_IDS(&intel_g45_info), 	\
+	INTEL_PINEVIEW_IDS(&intel_pineview_info),	\
+	INTEL_IRONLAKE_D_IDS(&intel_ironlake_d_info),	\
+	INTEL_IRONLAKE_M_IDS(&intel_ironlake_m_info),	\
+	INTEL_SNB_D_IDS(&intel_sandybridge_d_info),	\
+	INTEL_SNB_M_IDS(&intel_sandybridge_m_info),	\
+	INTEL_IVB_Q_IDS(&intel_ivybridge_q_info), /* must be first IVB */ \
+	INTEL_IVB_M_IDS(&intel_ivybridge_m_info),	\
+	INTEL_IVB_D_IDS(&intel_ivybridge_d_info),	\
+	INTEL_HSW_D_IDS(&intel_haswell_d_info), \
+	INTEL_HSW_M_IDS(&intel_haswell_m_info), \
+	INTEL_VLV_M_IDS(&intel_valleyview_m_info),	\
+	INTEL_VLV_D_IDS(&intel_valleyview_d_info),	\
+	INTEL_BDW_GT12M_IDS(&intel_broadwell_m_info),	\
+	INTEL_BDW_GT12D_IDS(&intel_broadwell_d_info),	\
+	INTEL_BDW_GT3M_IDS(&intel_broadwell_gt3m_info),	\
+	INTEL_BDW_GT3D_IDS(&intel_broadwell_gt3d_info), \
+	INTEL_CHV_IDS(&intel_cherryview_info),	\
+	INTEL_SKL_GT1_IDS(&intel_skylake_info),	\
+	INTEL_SKL_GT2_IDS(&intel_skylake_info),	\
+	INTEL_SKL_GT3_IDS(&intel_skylake_gt3_info),	\
+	INTEL_BXT_IDS(&intel_broxton_info)
+
+static const struct pci_device_id pciidlist[] = {		/* aka */
+	INTEL_PCI_IDS,
 	{0, 0, 0}
 };
 
@@ -691,8 +698,6 @@ static int i915_drm_suspend_late(struct drm_device *drm_dev, bool hibernation)
 		return ret;
 	}
 
-	i915_rc6_ctx_wa_suspend(dev_priv);
-
 	pci_disable_device(drm_dev->pdev);
 	/*
 	 * During hibernation on some platforms the BIOS may try to access
@@ -843,8 +848,6 @@ static int i915_drm_resume_early(struct drm_device *dev)
 
 	intel_uncore_sanitize(dev);
 	intel_power_domains_init_hw(dev_priv);
-
-	i915_rc6_ctx_wa_resume(dev_priv);
 
 	return ret;
 }
@@ -1545,9 +1548,6 @@ static int intel_runtime_suspend(struct device *device)
 	}
 
 	assert_forcewakes_inactive(dev_priv);
-
-	if (!IS_VALLEYVIEW(dev_priv) || !IS_CHERRYVIEW(dev_priv))
-		intel_hpd_poll_init(dev_priv);
 
 	DRM_DEBUG_KMS("Device suspended\n");
 	return 0;

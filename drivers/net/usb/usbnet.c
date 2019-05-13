@@ -42,7 +42,6 @@
 #include <linux/mii.h>
 #include <linux/usb.h>
 #include <linux/usb/usbnet.h>
-#include <linux/usb/cdc.h>
 #include <linux/slab.h>
 #include <linux/kernel.h>
 #include <linux/pm_runtime.h>
@@ -115,11 +114,6 @@ int usbnet_get_endpoints(struct usbnet *dev, struct usb_interface *intf)
 			int				intr = 0;
 
 			e = alt->endpoint + ep;
-
-			/* ignore endpoints which cannot transfer data */
-			if (!usb_endpoint_maxp(&e->desc))
-				continue;
-
 			switch (e->desc.bmAttributes) {
 			case USB_ENDPOINT_XFER_INT:
 				if (!usb_endpoint_dir_in(&e->desc))
@@ -352,8 +346,6 @@ void usbnet_update_max_qlen(struct usbnet *dev)
 {
 	enum usb_device_speed speed = dev->udev->speed;
 
-	if (!dev->rx_urb_size || !dev->hard_mtu)
-		goto insanity;
 	switch (speed) {
 	case USB_SPEED_HIGH:
 		dev->rx_qlen = MAX_QUEUE_MEMORY / dev->rx_urb_size;
@@ -369,7 +361,6 @@ void usbnet_update_max_qlen(struct usbnet *dev)
 		dev->tx_qlen = 5 * MAX_QUEUE_MEMORY / dev->hard_mtu;
 		break;
 	default:
-insanity:
 		dev->rx_qlen = dev->tx_qlen = 4;
 	}
 }
@@ -507,7 +498,6 @@ static int rx_submit (struct usbnet *dev, struct urb *urb, gfp_t flags)
 
 	if (netif_running (dev->net) &&
 	    netif_device_present (dev->net) &&
-	    test_bit(EVENT_DEV_OPEN, &dev->flags) &&
 	    !test_bit (EVENT_RX_HALT, &dev->flags) &&
 	    !test_bit (EVENT_DEV_ASLEEP, &dev->flags)) {
 		switch (retval = usb_submit_urb (urb, GFP_ATOMIC)) {
@@ -1394,11 +1384,6 @@ netdev_tx_t usbnet_start_xmit (struct sk_buff *skb,
 		spin_unlock_irqrestore(&dev->txq.lock, flags);
 		goto drop;
 	}
-	if (netif_queue_stopped(net)) {
-		usb_autopm_put_interface_async(dev->intf);
-		spin_unlock_irqrestore(&dev->txq.lock, flags);
-		goto drop;
-	}
 
 #ifdef CONFIG_PM
 	/* if this triggers the device is still a sleep */
@@ -1977,147 +1962,6 @@ static int __usbnet_write_cmd(struct usbnet *dev, u8 cmd, u8 reqtype,
 out:
 	return err;
 }
-
-int cdc_parse_cdc_header(struct usb_cdc_parsed_header *hdr,
-				struct usb_interface *intf,
-				u8 *buffer,
-				int buflen)
-{
-	/* duplicates are ignored */
-	struct usb_cdc_union_desc *union_header = NULL;
-
-	/* duplicates are not tolerated */
-	struct usb_cdc_header_desc *header = NULL;
-	struct usb_cdc_ether_desc *ether = NULL;
-	struct usb_cdc_mdlm_detail_desc *detail = NULL;
-	struct usb_cdc_mdlm_desc *desc = NULL;
-
-	unsigned int elength;
-	int cnt = 0;
-
-	memset(hdr, 0x00, sizeof(struct usb_cdc_parsed_header));
-	hdr->phonet_magic_present = false;
-	while (buflen > 0) {
-		elength = buffer[0];
-		if (!elength) {
-			dev_err(&intf->dev, "skipping garbage byte\n");
-			elength = 1;
-			goto next_desc;
-		}
-		if ((buflen < elength) || (elength < 3)) {
-			dev_err(&intf->dev, "invalid descriptor buffer length\n");
-			break;
-		}
-		if (buffer[1] != USB_DT_CS_INTERFACE) {
-			dev_err(&intf->dev, "skipping garbage\n");
-			goto next_desc;
-		}
-
-		switch (buffer[2]) {
-		case USB_CDC_UNION_TYPE: /* we've found it */
-			if (elength < sizeof(struct usb_cdc_union_desc))
-				goto next_desc;
-			if (union_header) {
-				dev_err(&intf->dev, "More than one union descriptor, skipping ...\n");
-				goto next_desc;
-			}
-			union_header = (struct usb_cdc_union_desc *)buffer;
-			break;
-		case USB_CDC_COUNTRY_TYPE:
-			if (elength < sizeof(struct usb_cdc_country_functional_desc))
-				goto next_desc;
-			hdr->usb_cdc_country_functional_desc =
-				(struct usb_cdc_country_functional_desc *)buffer;
-			break;
-		case USB_CDC_HEADER_TYPE:
-			if (elength != sizeof(struct usb_cdc_header_desc))
-				goto next_desc;
-			if (header)
-				return -EINVAL;
-			header = (struct usb_cdc_header_desc *)buffer;
-			break;
-		case USB_CDC_ACM_TYPE:
-			if (elength < sizeof(struct usb_cdc_acm_descriptor))
-				goto next_desc;
-			hdr->usb_cdc_acm_descriptor =
-				(struct usb_cdc_acm_descriptor *)buffer;
-			break;
-		case USB_CDC_ETHERNET_TYPE:
-			if (elength != sizeof(struct usb_cdc_ether_desc))
-				goto next_desc;
-			if (ether)
-				return -EINVAL;
-			ether = (struct usb_cdc_ether_desc *)buffer;
-			break;
-		case USB_CDC_CALL_MANAGEMENT_TYPE:
-			if (elength < sizeof(struct usb_cdc_call_mgmt_descriptor))
-				goto next_desc;
-			hdr->usb_cdc_call_mgmt_descriptor =
-				(struct usb_cdc_call_mgmt_descriptor *)buffer;
-			break;
-		case USB_CDC_DMM_TYPE:
-			if (elength < sizeof(struct usb_cdc_dmm_desc))
-				goto next_desc;
-			hdr->usb_cdc_dmm_desc =
-				(struct usb_cdc_dmm_desc *)buffer;
-			break;
-		case USB_CDC_MDLM_TYPE:
-			if (elength < sizeof(struct usb_cdc_mdlm_desc *))
-				goto next_desc;
-			if (desc)
-				return -EINVAL;
-			desc = (struct usb_cdc_mdlm_desc *)buffer;
-			break;
-		case USB_CDC_MDLM_DETAIL_TYPE:
-			if (elength < sizeof(struct usb_cdc_mdlm_detail_desc *))
-				goto next_desc;
-			if (detail)
-				return -EINVAL;
-			detail = (struct usb_cdc_mdlm_detail_desc *)buffer;
-			break;
-		case USB_CDC_NCM_TYPE:
-			if (elength < sizeof(struct usb_cdc_ncm_desc))
-				goto next_desc;
-			hdr->usb_cdc_ncm_desc = (struct usb_cdc_ncm_desc *)buffer;
-			break;
-		case USB_CDC_MBIM_TYPE:
-			if (elength < sizeof(struct usb_cdc_mbim_desc))
-				goto next_desc;
-
-			hdr->usb_cdc_mbim_desc = (struct usb_cdc_mbim_desc *)buffer;
-			break;
-		case USB_CDC_MBIM_EXTENDED_TYPE:
-			if (elength < sizeof(struct usb_cdc_mbim_extended_desc))
-				break;
-			hdr->usb_cdc_mbim_extended_desc =
-				(struct usb_cdc_mbim_extended_desc *)buffer;
-			break;
-		case CDC_PHONET_MAGIC_NUMBER:
-			hdr->phonet_magic_present = true;
-			break;
-		default:
-			/*
-			 * there are LOTS more CDC descriptors that
-			 * could legitimately be found here.
-			 */
-			dev_dbg(&intf->dev, "Ignoring descriptor: type %02x, length %ud\n",
-					buffer[2], elength);
-			goto next_desc;
-		}
-		cnt++;
-next_desc:
-		buflen -= elength;
-		buffer += elength;
-	}
-	hdr->usb_cdc_union_desc = union_header;
-	hdr->usb_cdc_header_desc = header;
-	hdr->usb_cdc_mdlm_detail_desc = detail;
-	hdr->usb_cdc_mdlm_desc = desc;
-	hdr->usb_cdc_ether_desc = ether;
-	return cnt;
-}
-
-EXPORT_SYMBOL(cdc_parse_cdc_header);
 
 /*
  * The function can't be called inside suspend/resume callback,

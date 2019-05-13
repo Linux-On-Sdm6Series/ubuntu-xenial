@@ -127,13 +127,13 @@ extern void cleanup_module(void);
 #define module_init(initfn)					\
 	static inline initcall_t __maybe_unused __inittest(void)		\
 	{ return initfn; }					\
-	int init_module(void) __copy(initfn) __attribute__((alias(#initfn)));
+	int init_module(void) __attribute__((alias(#initfn)));
 
 /* This is only required if you want to be unloadable. */
 #define module_exit(exitfn)					\
 	static inline exitcall_t __maybe_unused __exittest(void)		\
 	{ return exitfn; }					\
-	void cleanup_module(void) __copy(exitfn) __attribute__((alias(#exitfn)));
+	void cleanup_module(void) __attribute__((alias(#exitfn)));
 
 #endif
 
@@ -273,12 +273,6 @@ const struct exception_table_entry *search_exception_tables(unsigned long add);
 
 struct notifier_block;
 
-#ifdef CONFIG_MODULE_SIG
-extern void enforce_signed_modules(void);
-#else
-static inline void enforce_signed_modules(void) {};
-#endif
-
 #ifdef CONFIG_MODULES
 
 extern int modules_disabled; /* for sysctl */
@@ -307,28 +301,6 @@ struct mod_tree_node {
 	struct module *mod;
 	struct latch_tree_node node;
 };
-
-struct module_layout {
-	/* The actual code + data. */
-	void *base;
-	/* Total size. */
-	unsigned int size;
-	/* The size of the executable code.  */
-	unsigned int text_size;
-	/* Size of RO section of the module (text+rodata) */
-	unsigned int ro_size;
-
-#ifdef CONFIG_MODULES_TREE_LOOKUP
-	struct mod_tree_node mtn;
-#endif
-};
-
-#ifdef CONFIG_MODULES_TREE_LOOKUP
-/* Only touch one cacheline for common rbtree-for-core-layout case. */
-#define __module_layout_align ____cacheline_aligned
-#else
-#define __module_layout_align
-#endif
 
 struct mod_kallsyms {
 	Elf_Sym *symtab;
@@ -400,9 +372,37 @@ struct module {
 	/* Startup function. */
 	int (*init)(void);
 
-	/* Core layout: rbtree is accessed frequently, so keep together. */
-	struct module_layout core_layout __module_layout_align;
-	struct module_layout init_layout;
+	/*
+	 * If this is non-NULL, vfree() after init() returns.
+	 *
+	 * Cacheline align here, such that:
+	 *   module_init, module_core, init_size, core_size,
+	 *   init_text_size, core_text_size and mtn_core::{mod,node[0]}
+	 * are on the same cacheline.
+	 */
+	void *module_init	____cacheline_aligned;
+
+	/* Here is the actual code + data, vfree'd on unload. */
+	void *module_core;
+
+	/* Here are the sizes of the init and core sections */
+	unsigned int init_size, core_size;
+
+	/* The size of the executable code in each section.  */
+	unsigned int init_text_size, core_text_size;
+
+#ifdef CONFIG_MODULES_TREE_LOOKUP
+	/*
+	 * We want mtn_core::{mod,node[0]} to be in the same cacheline as the
+	 * above entries such that a regular lookup will only touch one
+	 * cacheline.
+	 */
+	struct mod_tree_node	mtn_core;
+	struct mod_tree_node	mtn_init;
+#endif
+
+	/* Size of RO sections of the module (text+rodata) */
+	unsigned int init_ro_size, core_ro_size;
 
 	/* Arch-specific module values */
 	struct mod_arch_specific arch;
@@ -420,7 +420,7 @@ struct module {
 	/* Protected by RCU and/or module_mutex: use rcu_dereference() */
 	struct mod_kallsyms *kallsyms;
 	struct mod_kallsyms core_kallsyms;
-	
+
 	/* Section attributes */
 	struct module_sect_attrs *sect_attrs;
 
@@ -506,15 +506,15 @@ bool is_module_text_address(unsigned long addr);
 static inline bool within_module_core(unsigned long addr,
 				      const struct module *mod)
 {
-	return (unsigned long)mod->core_layout.base <= addr &&
-	       addr < (unsigned long)mod->core_layout.base + mod->core_layout.size;
+	return (unsigned long)mod->module_core <= addr &&
+	       addr < (unsigned long)mod->module_core + mod->core_size;
 }
 
 static inline bool within_module_init(unsigned long addr,
 				      const struct module *mod)
 {
-	return (unsigned long)mod->init_layout.base <= addr &&
-	       addr < (unsigned long)mod->init_layout.base + mod->init_layout.size;
+	return (unsigned long)mod->module_init <= addr &&
+	       addr < (unsigned long)mod->module_init + mod->init_size;
 }
 
 static inline bool within_module(unsigned long addr, const struct module *mod)
@@ -636,8 +636,6 @@ static inline bool module_requested_async_probing(struct module *module)
 	return module && module->async_probe_requested;
 }
 
-extern bool secure_modules(void);
-
 #else /* !CONFIG_MODULES... */
 
 /* Given an address, look for it in the exception tables. */
@@ -754,10 +752,6 @@ static inline bool module_requested_async_probing(struct module *module)
 	return false;
 }
 
-static inline bool secure_modules(void)
-{
-	return false;
-}
 #endif /* CONFIG_MODULES */
 
 #ifdef CONFIG_SYSFS
@@ -775,13 +769,9 @@ extern int module_sysfs_initialized;
 #ifdef CONFIG_DEBUG_SET_MODULE_RONX
 extern void set_all_modules_text_rw(void);
 extern void set_all_modules_text_ro(void);
-extern void module_enable_ro(const struct module *mod);
-extern void module_disable_ro(const struct module *mod);
 #else
 static inline void set_all_modules_text_rw(void) { }
 static inline void set_all_modules_text_ro(void) { }
-static inline void module_enable_ro(const struct module *mod) { }
-static inline void module_disable_ro(const struct module *mod) { }
 #endif
 
 #ifdef CONFIG_GENERIC_BUG

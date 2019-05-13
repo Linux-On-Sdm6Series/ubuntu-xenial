@@ -94,22 +94,26 @@ ip6_packet_match(const struct sk_buff *skb,
 {
 	unsigned long ret;
 	const struct ipv6hdr *ipv6 = ipv6_hdr(skb);
+#if IS_ENABLED(IP6_NF_IPTABLES_128)
+	const __uint128_t *ulm1 = (const __uint128_t *)&ip6info->smsk;
+	const __uint128_t *ulm2 = (const __uint128_t *)&ip6info->dmsk;
+#endif
 
 #define FWINV(bool, invflg) ((bool) ^ !!(ip6info->invflags & (invflg)))
 
-	if (FWINV(ipv6_masked_addr_cmp(&ipv6->saddr, &ip6info->smsk,
-				       &ip6info->src), IP6T_INV_SRCIP) ||
-	    FWINV(ipv6_masked_addr_cmp(&ipv6->daddr, &ip6info->dmsk,
-				       &ip6info->dst), IP6T_INV_DSTIP)) {
-		dprintf("Source or dest mismatch.\n");
-/*
-		dprintf("SRC: %u. Mask: %u. Target: %u.%s\n", ip->saddr,
-			ipinfo->smsk.s_addr, ipinfo->src.s_addr,
-			ipinfo->invflags & IP6T_INV_SRCIP ? " (INV)" : "");
-		dprintf("DST: %u. Mask: %u. Target: %u.%s\n", ip->daddr,
-			ipinfo->dmsk.s_addr, ipinfo->dst.s_addr,
-			ipinfo->invflags & IP6T_INV_DSTIP ? " (INV)" : "");*/
-		return false;
+#if IS_ENABLED(IP6_NF_IPTABLES_128)
+	if (*ulm1 || *ulm2)
+#endif
+	{
+		if (FWINV(ipv6_masked_addr_cmp
+			  (&ipv6->saddr, &ip6info->smsk, &ip6info->src),
+			   IP6T_INV_SRCIP) ||
+		    FWINV(ipv6_masked_addr_cmp(&ipv6->daddr, &ip6info->dmsk,
+					       &ip6info->dst),
+			  IP6T_INV_DSTIP)) {
+			dprintf("Source or dest mismatch.\n");
+			return false;
+		}
 	}
 
 	ret = ifname_compare_aligned(indev, ip6info->iniface, ip6info->iniface_mask);
@@ -459,17 +463,6 @@ ip6t_do_table(struct sk_buff *skb,
 #endif
 }
 
-static bool next_offset_ok(const struct xt_table_info *t, unsigned int newpos)
-{
-	if (newpos > t->size - sizeof(struct ip6t_entry))
-		return false;
-
-	if (newpos % __alignof__(struct ip6t_entry) != 0)
-		return false;
-
-	return true;
-}
-
 /* Figures out from what hook each rule can be called: returns 0 if
    there are loops.  Puts hook bitmask in comefrom. */
 static int
@@ -546,8 +539,6 @@ mark_source_chains(const struct xt_table_info *newinfo,
 
 				/* Move along one */
 				size = e->next_offset;
-				if (!next_offset_ok(newinfo, pos + size))
-					return 0;
 				e = (struct ip6t_entry *)
 					(entry0 + pos + size);
 				if (pos + size >= newinfo->size)
@@ -560,6 +551,13 @@ mark_source_chains(const struct xt_table_info *newinfo,
 				if (strcmp(t->target.u.user.name,
 					   XT_STANDARD_TARGET) == 0 &&
 				    newpos >= 0) {
+					if (newpos > newinfo->size -
+						sizeof(struct ip6t_entry)) {
+						duprintf("mark_source_chains: "
+							"bad verdict (%i)\n",
+								newpos);
+						return 0;
+					}
 					/* This a jump; chase it. */
 					duprintf("Jump rule %u -> %u\n",
 						 pos, newpos);
@@ -574,10 +572,6 @@ mark_source_chains(const struct xt_table_info *newinfo,
 					if (newpos >= newinfo->size)
 						return 0;
 				}
-
-				if (!next_offset_ok(newinfo, newpos))
-					return 0;
-
 				e = (struct ip6t_entry *)
 					(entry0 + newpos);
 				e->counters.pcnt = pos;
@@ -672,8 +666,8 @@ static int check_target(struct ip6t_entry *e, struct net *net, const char *name)
 
 static int
 find_check_entry(struct ip6t_entry *e, struct net *net, const char *name,
-		unsigned int size,
-		struct xt_percpu_counter_alloc_state *alloc_state)
+		 unsigned int size,
+		 struct xt_percpu_counter_alloc_state *alloc_state)
 {
 	struct xt_entry_target *t;
 	struct xt_target *target;
@@ -817,7 +811,6 @@ static void cleanup_entry(struct ip6t_entry *e, struct net *net)
 	if (par.target->destroy != NULL)
 		par.target->destroy(&par);
 	module_put(par.target->me);
-
 	xt_percpu_counter_free(&e->counters);
 }
 
@@ -897,8 +890,8 @@ translate_table(struct net *net, struct xt_table_info *newinfo, void *entry0,
 	/* Finally, each sanity check must pass */
 	i = 0;
 	xt_entry_foreach(iter, entry0, newinfo->size) {
-               ret = find_check_entry(iter, net, repl->name, repl->size,
-                                      &alloc_state);
+		ret = find_check_entry(iter, net, repl->name, repl->size,
+				       &alloc_state);
 		if (ret != 0)
 			break;
 		++i;
@@ -1193,7 +1186,6 @@ get_entries(struct net *net, struct ip6t_get_entries __user *uptr,
 			 *len, sizeof(get) + get.size);
 		return -EINVAL;
 	}
-	get.name[sizeof(get.name) - 1] = '\0';
 
 	t = xt_find_table_lock(net, AF_INET6, get.name);
 	if (!IS_ERR_OR_NULL(t)) {
@@ -1812,7 +1804,6 @@ compat_get_entries(struct net *net, struct compat_ip6t_get_entries __user *uptr,
 			 *len, sizeof(get) + get.size);
 		return -EINVAL;
 	}
-	get.name[sizeof(get.name) - 1] = '\0';
 
 	xt_compat_lock(AF_INET6);
 	t = xt_find_table_lock(net, AF_INET6, get.name);

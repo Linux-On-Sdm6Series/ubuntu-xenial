@@ -1826,8 +1826,8 @@ static int r100_packet0_check(struct radeon_cs_parser *p,
 			track->textures[i].use_pitch = 1;
 		} else {
 			track->textures[i].use_pitch = 0;
-			track->textures[i].width = 1 << ((idx_value & RADEON_TXFORMAT_WIDTH_MASK) >> RADEON_TXFORMAT_WIDTH_SHIFT);
-			track->textures[i].height = 1 << ((idx_value & RADEON_TXFORMAT_HEIGHT_MASK) >> RADEON_TXFORMAT_HEIGHT_SHIFT);
+			track->textures[i].width = 1 << ((idx_value >> RADEON_TXFORMAT_WIDTH_SHIFT) & RADEON_TXFORMAT_WIDTH_MASK);
+			track->textures[i].height = 1 << ((idx_value >> RADEON_TXFORMAT_HEIGHT_SHIFT) & RADEON_TXFORMAT_HEIGHT_MASK);
 		}
 		if (idx_value & RADEON_TXFORMAT_CUBIC_MAP_ENABLE)
 			track->textures[i].tex_coord_type = 2;
@@ -3150,8 +3150,7 @@ void r100_bandwidth_update(struct radeon_device *rdev)
 {
 	fixed20_12 trcd_ff, trp_ff, tras_ff, trbs_ff, tcas_ff;
 	fixed20_12 sclk_ff, mclk_ff, sclk_eff_ff, sclk_delay_ff;
-	fixed20_12 peak_disp_bw, mem_bw, pix_clk, pix_clk2, temp_ff;
-	fixed20_12 crit_point_ff = {0};
+	fixed20_12 peak_disp_bw, mem_bw, pix_clk, pix_clk2, temp_ff, crit_point_ff;
 	uint32_t temp, data, mem_trcd, mem_trp, mem_tras;
 	fixed20_12 memtcas_ff[8] = {
 		dfixed_init(1),
@@ -3205,7 +3204,7 @@ void r100_bandwidth_update(struct radeon_device *rdev)
 	fixed20_12 min_mem_eff;
 	fixed20_12 mc_latency_sclk, mc_latency_mclk, k1;
 	fixed20_12 cur_latency_mclk, cur_latency_sclk;
-	fixed20_12 disp_latency, disp_latency_overhead, disp_drain_rate = {0},
+	fixed20_12 disp_latency, disp_latency_overhead, disp_drain_rate,
 		disp_drain_rate2, read_return_rate;
 	fixed20_12 time_disp1_drop_priority;
 	int c;

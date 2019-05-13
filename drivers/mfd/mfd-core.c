@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/platform_device.h>
 #include <linux/acpi.h>
-#include <linux/property.h>
 #include <linux/mfd/core.h>
 #include <linux/pm_runtime.h>
 #include <linux/slab.h>
@@ -179,7 +178,6 @@ static int mfd_add_device(struct device *parent, int id,
 		for_each_child_of_node(parent->of_node, np) {
 			if (of_device_is_compatible(np, cell->of_compatible)) {
 				pdev->dev.of_node = np;
-				pdev->dev.fwnode = &np->fwnode;
 				break;
 			}
 		}
@@ -190,12 +188,6 @@ static int mfd_add_device(struct device *parent, int id,
 	if (cell->pdata_size) {
 		ret = platform_device_add_data(pdev,
 					cell->platform_data, cell->pdata_size);
-		if (ret)
-			goto fail_alias;
-	}
-
-	if (cell->pset) {
-		ret = platform_device_add_properties(pdev, cell->pset);
 		if (ret)
 			goto fail_alias;
 	}

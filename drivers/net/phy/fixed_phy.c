@@ -5,7 +5,6 @@
  *         Anton Vorontsov <avorontsov@ru.mvista.com>
  *
  * Copyright (c) 2006-2007 MontaVista Software, Inc.
- * Copyright 2009 Freescale Semiconductor, Inc.
  *
  * This program is free software; you can redistribute  it and/or modify it
  * under  the terms of  the GNU General  Public License as published by the
@@ -18,7 +17,6 @@
 #include <linux/platform_device.h>
 #include <linux/list.h>
 #include <linux/mii.h>
-#include <linux/mdio.h>
 #include <linux/phy.h>
 #include <linux/phy_fixed.h>
 #include <linux/err.h>
@@ -61,9 +59,6 @@ static int fixed_phy_update_regs(struct fixed_phy *fp)
 
 	if (fp->status.duplex) {
 		switch (fp->status.speed) {
-		case 10000:
-			fp->regs[MDIO_STAT2] = MDIO_STAT2_DEVPRST_VAL;
-			break;
 		case 1000:
 			bmsr |= BMSR_ESTATEN;
 			break;
@@ -78,9 +73,6 @@ static int fixed_phy_update_regs(struct fixed_phy *fp)
 		}
 	} else {
 		switch (fp->status.speed) {
-		case 10000:
-			fp->regs[MDIO_STAT2] = MDIO_STAT2_DEVPRST_VAL;
-			break;
 		case 1000:
 			bmsr |= BMSR_ESTATEN;
 			break;

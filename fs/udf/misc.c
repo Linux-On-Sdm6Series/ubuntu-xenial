@@ -24,7 +24,6 @@
 #include <linux/fs.h>
 #include <linux/string.h>
 #include <linux/crc-itu-t.h>
-#include <linux/nospec.h>
 
 #include "udf_i.h"
 #include "udf_sb.h"
@@ -104,9 +103,7 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 			if (le32_to_cpu(eahd->appAttrLocation) <
 					iinfo->i_lenEAttr) {
 				uint32_t aal =
-					array_index_nospec(le32_to_cpu(eahd->appAttrLocation),
-							   iinfo->i_lenEAttr); /* needed? */
-
+					le32_to_cpu(eahd->appAttrLocation);
 				memmove(&ea[offset - aal + size],
 					&ea[aal], offset - aal);
 				offset -= aal;
@@ -116,9 +113,7 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 			if (le32_to_cpu(eahd->impAttrLocation) <
 					iinfo->i_lenEAttr) {
 				uint32_t ial =
-					array_index_nospec(le32_to_cpu(eahd->impAttrLocation),
-							   iinfo->i_lenEAttr); /* needed? */
-
+					le32_to_cpu(eahd->impAttrLocation);
 				memmove(&ea[offset - ial + size],
 					&ea[ial], offset - ial);
 				offset -= ial;
@@ -129,9 +124,7 @@ struct genericFormat *udf_add_extendedattr(struct inode *inode, uint32_t size,
 			if (le32_to_cpu(eahd->appAttrLocation) <
 					iinfo->i_lenEAttr) {
 				uint32_t aal =
-					array_index_nospec(le32_to_cpu(eahd->appAttrLocation),
-							   iinfo->i_lenEAttr); /* needed? */
-
+					le32_to_cpu(eahd->appAttrLocation);
 				memmove(&ea[offset - aal + size],
 					&ea[aal], offset - aal);
 				offset -= aal;

@@ -268,7 +268,7 @@ static struct smack_known *smk_fetch(const char *name, struct inode *ip,
 	if (ip->i_op->getxattr == NULL)
 		return ERR_PTR(-EOPNOTSUPP);
 
-	buffer = kzalloc(SMK_LONGLABEL, GFP_NOFS);
+	buffer = kzalloc(SMK_LONGLABEL, GFP_KERNEL);
 	if (buffer == NULL)
 		return ERR_PTR(-ENOMEM);
 
@@ -549,7 +549,7 @@ static int smack_sb_alloc_security(struct super_block *sb)
 	sbsp->smk_floor = &smack_known_floor;
 	sbsp->smk_hat = &smack_known_hat;
 	/*
-	 * SMK_SB_INITIALIZED will be zero from kzalloc.
+	 * smk_initialized will be zero from kzalloc.
 	 */
 	sb->s_security = sbsp;
 
@@ -766,10 +766,10 @@ static int smack_set_mnt_opts(struct super_block *sb,
 	int num_opts = opts->num_mnt_opts;
 	int transmute = 0;
 
-	if (sp->smk_flags & SMK_SB_INITIALIZED)
+	if (sp->smk_initialized)
 		return 0;
 
-	sp->smk_flags |= SMK_SB_INITIALIZED;
+	sp->smk_initialized = 1;
 
 	for (i = 0; i < num_opts; i++) {
 		switch (opts->mnt_opts_flags[i]) {
@@ -821,17 +821,6 @@ static int smack_set_mnt_opts(struct super_block *sb,
 		skp = smk_of_current();
 		sp->smk_root = skp;
 		sp->smk_default = skp;
-		/*
-		 * For a handful of fs types with no user-controlled
-		 * backing store it's okay to trust security labels
-		 * in the filesystem. The rest are untrusted.
-		 */
-		if (sb->s_user_ns != &init_user_ns &&
-		    sb->s_magic != SYSFS_MAGIC && sb->s_magic != TMPFS_MAGIC &&
-		    sb->s_magic != RAMFS_MAGIC) {
-			transmute = 1;
-			sp->smk_flags |= SMK_SB_UNTRUSTED;
-		}
 	}
 
 	/*
@@ -919,7 +908,6 @@ static int smack_bprm_set_creds(struct linux_binprm *bprm)
 	struct inode *inode = file_inode(bprm->file);
 	struct task_smack *bsp = bprm->cred->security;
 	struct inode_smack *isp;
-	struct superblock_smack *sbsp;
 	int rc;
 
 	if (bprm->cred_prepared)
@@ -927,11 +915,6 @@ static int smack_bprm_set_creds(struct linux_binprm *bprm)
 
 	isp = inode->i_security;
 	if (isp->smk_task == NULL || isp->smk_task == bsp->smk_task)
-		return 0;
-
-	sbsp = inode->i_sb->s_security;
-	if ((sbsp->smk_flags & SMK_SB_UNTRUSTED) &&
-	    isp->smk_task != sbsp->smk_root)
 		return 0;
 
 	if (bprm->unsafe & (LSM_UNSAFE_PTRACE | LSM_UNSAFE_PTRACE_CAP)) {
@@ -949,8 +932,7 @@ static int smack_bprm_set_creds(struct linux_binprm *bprm)
 
 		if (rc != 0)
 			return rc;
-	}
-	if (bprm->unsafe & ~LSM_UNSAFE_PTRACE)
+	} else if (bprm->unsafe)
 		return -EPERM;
 
 	bsp->smk_task = isp->smk_task;
@@ -1221,7 +1203,6 @@ static int smack_inode_rename(struct inode *old_inode,
  */
 static int smack_inode_permission(struct inode *inode, int mask)
 {
-	struct superblock_smack *sbsp = inode->i_sb->s_security;
 	struct smk_audit_info ad;
 	int no_block = mask & MAY_NOT_BLOCK;
 	int rc;
@@ -1232,11 +1213,6 @@ static int smack_inode_permission(struct inode *inode, int mask)
 	 */
 	if (mask == 0)
 		return 0;
-
-	if (sbsp->smk_flags & SMK_SB_UNTRUSTED) {
-		if (smk_of_inode(inode) != sbsp->smk_root)
-			return -EACCES;
-	}
 
 	/* May be droppable after audit */
 	if (no_block)
@@ -1733,7 +1709,6 @@ static int smack_mmap_file(struct file *file,
 	struct task_smack *tsp;
 	struct smack_known *okp;
 	struct inode_smack *isp;
-	struct superblock_smack *sbsp;
 	int may;
 	int mmay;
 	int tmay;
@@ -1745,10 +1720,6 @@ static int smack_mmap_file(struct file *file,
 	isp = file_inode(file)->i_security;
 	if (isp->smk_mmap == NULL)
 		return 0;
-	sbsp = file_inode(file)->i_sb->s_security;
-	if (sbsp->smk_flags & SMK_SB_UNTRUSTED &&
-	    isp->smk_mmap != sbsp->smk_root)
-		return -EACCES;
 	mkp = isp->smk_mmap;
 
 	tsp = current_security();
@@ -4015,8 +3986,6 @@ access_check:
 			skp = smack_ipv6host_label(&sadd);
 		if (skp == NULL)
 			skp = smack_net_ambient;
-		if (skb == NULL)
-			break;
 #ifdef CONFIG_AUDIT
 		smk_ad_init_net(&ad, __func__, LSM_AUDIT_DATA_NET, &net);
 		ad.a.u.net->family = sk->sk_family;
@@ -4342,12 +4311,6 @@ static int smack_key_permission(key_ref_t key_ref,
 	int request = 0;
 	int rc;
 
-	/*
-	 * Validate requested permissions
-	 */
-	if (perm & ~KEY_NEED_ALL)
-		return -EINVAL;
-
 	keyp = key_ref_to_ptr(key_ref);
 	if (keyp == NULL)
 		return -EINVAL;
@@ -4367,10 +4330,10 @@ static int smack_key_permission(key_ref_t key_ref,
 	ad.a.u.key_struct.key = keyp->serial;
 	ad.a.u.key_struct.key_desc = keyp->description;
 #endif
-	if (perm & (KEY_NEED_READ | KEY_NEED_SEARCH | KEY_NEED_VIEW))
-		request |= MAY_READ;
+	if (perm & KEY_NEED_READ)
+		request = MAY_READ;
 	if (perm & (KEY_NEED_WRITE | KEY_NEED_LINK | KEY_NEED_SETATTR))
-		request |= MAY_WRITE;
+		request = MAY_WRITE;
 	rc = smk_access(tkp, keyp->security, request, &ad);
 	rc = smk_bu_note("key access", tkp, keyp->security, request, rc);
 	return rc;

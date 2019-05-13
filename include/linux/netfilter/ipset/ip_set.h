@@ -234,10 +234,6 @@ struct ip_set {
 	spinlock_t lock;
 	/* References to the set */
 	u32 ref;
-	/* References to the set for netlink events like dump,
-	 * ref can be swapped out by ip_set_swap
-	 */
-	u32 ref_netlink;
 	/* The core set type */
 	struct ip_set_type *type;
 	/* The type variant doing the real job */
@@ -532,6 +528,13 @@ ip6addrptr(const struct sk_buff *skb, bool src, struct in6_addr *addr)
 {
 	memcpy(addr, src ? &ipv6_hdr(skb)->saddr : &ipv6_hdr(skb)->daddr,
 	       sizeof(*addr));
+}
+
+/* Calculate the bytes required to store the inclusive range of a-b */
+static inline int
+bitmap_bytes(u32 a, u32 b)
+{
+	return 4 * ((((b - a + 8) / 8) + 3) / 4);
 }
 
 #include <linux/netfilter/ipset/ip_set_timeout.h>

@@ -1,5 +1,4 @@
-#include <linux/export.h>
-#include <linux/spinlock_types.h>
+#include <linux/module.h>
 
 #include <asm/checksum.h>
 #include <asm/pgtable.h>

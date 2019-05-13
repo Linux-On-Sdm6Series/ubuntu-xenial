@@ -1390,7 +1390,7 @@ static int xgbe_close(struct net_device *netdev)
 	return 0;
 }
 
-static netdev_tx_t xgbe_xmit(struct sk_buff *skb, struct net_device *netdev)
+static int xgbe_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	struct xgbe_hw_if *hw_if = &pdata->hw_if;
@@ -1399,7 +1399,7 @@ static netdev_tx_t xgbe_xmit(struct sk_buff *skb, struct net_device *netdev)
 	struct xgbe_ring *ring;
 	struct xgbe_packet_data *packet;
 	struct netdev_queue *txq;
-	netdev_tx_t ret;
+	int ret;
 
 	DBGPR("-->xgbe_xmit: skb->len = %d\n", skb->len);
 
@@ -1628,17 +1628,11 @@ static void xgbe_poll_controller(struct net_device *netdev)
 }
 #endif /* End CONFIG_NET_POLL_CONTROLLER */
 
-static int xgbe_setup_tc(struct net_device *netdev, u32 handle, __be16 proto,
-			 struct tc_to_netdev *tc_to_netdev)
+static int xgbe_setup_tc(struct net_device *netdev, u8 tc)
 {
 	struct xgbe_prv_data *pdata = netdev_priv(netdev);
 	unsigned int offset, queue;
-	u8 i, tc;
-
-	if (handle != TC_H_ROOT || tc_to_netdev->type != TC_SETUP_MQPRIO)
-		return -EINVAL;
-
-	tc = tc_to_netdev->tc;
+	u8 i;
 
 	if (tc && (tc != pdata->hw_feat.tc_cnt))
 		return -EINVAL;

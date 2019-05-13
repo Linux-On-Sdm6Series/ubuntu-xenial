@@ -24,8 +24,6 @@
 #include <linux/btrfs.h>
 #include "async-thread.h"
 
-#define BTRFS_MAX_DATA_CHUNK_SIZE	(10ULL * SZ_1G)
-
 extern struct mutex uuid_mutex;
 
 #define BTRFS_STRIPE_LEN	(64 * 1024)
@@ -62,11 +60,6 @@ struct btrfs_device {
 
 	spinlock_t io_lock ____cacheline_aligned;
 	int running_pending;
-	/* When true means this device has pending chunk alloc in
-	 * current transaction. Protected by chunk_mutex.
-	 */
-	bool has_pending_chunks;
-
 	/* regular prio bios */
 	struct btrfs_pending_bios pending_bios;
 	/* WRITE_SYNC bios */
@@ -312,6 +305,7 @@ struct btrfs_bio {
 	u64 map_type; /* get from map_lookup->type */
 	bio_end_io_t *end_io;
 	struct bio *orig_bio;
+	unsigned long flags;
 	void *private;
 	atomic_t error;
 	int max_errors;
@@ -462,8 +456,8 @@ void btrfs_cleanup_fs_uuids(void);
 int btrfs_num_copies(struct btrfs_fs_info *fs_info, u64 logical, u64 len);
 int btrfs_grow_device(struct btrfs_trans_handle *trans,
 		      struct btrfs_device *device, u64 new_size);
-struct btrfs_device *btrfs_find_device(struct btrfs_fs_devices *fs_devices,
-				       u64 devid, u8 *uuid, u8 *fsid, bool seed);
+struct btrfs_device *btrfs_find_device(struct btrfs_fs_info *fs_info, u64 devid,
+				       u8 *uuid, u8 *fsid);
 int btrfs_shrink_device(struct btrfs_device *device, u64 new_size);
 int btrfs_init_new_device(struct btrfs_root *root, char *path);
 int btrfs_init_dev_replace_tgtdev(struct btrfs_root *root, char *device_path,

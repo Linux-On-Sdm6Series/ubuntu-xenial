@@ -165,29 +165,15 @@ static inline int tty_put_user(struct tty_struct *tty, unsigned char x,
 	return put_user(x, ptr);
 }
 
-/* If we are not echoing the data, perhaps this is a secret so erase it */
-static inline void zero_buffer(struct tty_struct *tty, u8 *buffer, int size)
-{
-	bool icanon = !!L_ICANON(tty);
-	bool no_echo = !L_ECHO(tty);
-
-	if (icanon && no_echo)
-		memset(buffer, 0x00, size);
-}
-
 static inline int tty_copy_to_user(struct tty_struct *tty,
 					void __user *to,
-					void *from,
+					const void *from,
 					unsigned long n)
 {
 	struct n_tty_data *ldata = tty->disc_data;
-	int retval;
 
 	tty_audit_add_data(tty, from, n, ldata->icanon);
-	retval = copy_to_user(to, from, n);
-	if (!retval)
-		zero_buffer(tty, from, n);
-	return retval;
+	return copy_to_user(to, from, n);
 }
 
 /**
@@ -1736,7 +1722,7 @@ n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
 
 	down_read(&tty->termios_rwsem);
 
-	do {
+	while (1) {
 		/*
 		 * When PARMRK is set, each input char may take up to 3 chars
 		 * in the read buf; reduce the buffer space avail by 3x
@@ -1778,7 +1764,7 @@ n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
 			fp += n;
 		count -= n;
 		rcvd += n;
-	} while (!test_bit(TTY_LDISC_CHANGING, &tty->flags));
+	}
 
 	tty->receive_room = room;
 
@@ -2019,7 +2005,6 @@ static int copy_from_read_buf(struct tty_struct *tty,
 		is_eof = n == 1 && read_buf(ldata, tail) == EOF_CHAR(tty);
 		tty_audit_add_data(tty, read_buf_addr(ldata, tail), n,
 				ldata->icanon);
-		zero_buffer(tty, read_buf_addr(ldata, tail), n);
 		smp_store_release(&ldata->read_tail, ldata->read_tail + n);
 		/* Turn single EOF into zero-length read */
 		if (L_EXTPROC(tty) && ldata->icanon && is_eof &&
@@ -2270,7 +2255,7 @@ static ssize_t n_tty_read(struct tty_struct *tty, struct file *file,
 					break;
 				if (!timeout)
 					break;
-				if (tty_io_nonblock(tty, file)) {
+				if (file->f_flags & O_NONBLOCK) {
 					retval = -EAGAIN;
 					break;
 				}
@@ -2427,7 +2412,7 @@ static ssize_t n_tty_write(struct tty_struct *tty, struct file *file,
 		}
 		if (!nr)
 			break;
-		if (tty_io_nonblock(tty, file)) {
+		if (file->f_flags & O_NONBLOCK) {
 			retval = -EAGAIN;
 			break;
 		}

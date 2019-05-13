@@ -366,15 +366,6 @@ static void netlink_skb_set_owner_r(struct sk_buff *skb, struct sock *sk)
 
 static void netlink_sock_destruct(struct sock *sk)
 {
-	struct netlink_sock *nlk = nlk_sk(sk);
-
-	if (nlk->cb_running) {
-		if (nlk->cb.done)
-			nlk->cb.done(&nlk->cb);
-		module_put(nlk->cb.module);
-		kfree_skb(nlk->cb.skb);
-	}
-
 	skb_queue_purge(&sk->sk_receive_queue);
 
 	if (!sock_flag(sk, SOCK_DEAD)) {
@@ -385,14 +376,6 @@ static void netlink_sock_destruct(struct sock *sk)
 	WARN_ON(atomic_read(&sk->sk_rmem_alloc));
 	WARN_ON(atomic_read(&sk->sk_wmem_alloc));
 	WARN_ON(nlk_sk(sk)->groups);
-}
-
-static void netlink_sock_destruct_work(struct work_struct *work)
-{
-	struct netlink_sock *nlk = container_of(work, struct netlink_sock,
-						work);
-
-	sk_free(&nlk->sk);
 }
 
 /* This lock without WQ_FLAG_EXCLUSIVE is good on UP and it is _very_ bad on
@@ -505,8 +488,9 @@ static struct sock *netlink_lookup(struct net *net, int protocol, u32 portid)
 
 	rcu_read_lock();
 	sk = __netlink_lookup(table, portid, net);
-	if (sk)
-		sock_hold(sk);
+	if (sk && !atomic_inc_not_zero(&sk->sk_refcnt))
+		sk = NULL;
+
 	rcu_read_unlock();
 
 	return sk;
@@ -633,6 +617,7 @@ static int __netlink_create(struct net *net, struct socket *sock,
 	}
 	init_waitqueue_head(&nlk->wait);
 
+	sock_set_flag(sk, SOCK_RCU_FREE);
 	sk->sk_destruct = netlink_sock_destruct;
 	sk->sk_protocol = protocol;
 	return 0;
@@ -696,23 +681,6 @@ out:
 out_module:
 	module_put(module);
 	goto out;
-}
-
-static void deferred_put_nlk_sk(struct rcu_head *head)
-{
-	struct netlink_sock *nlk = container_of(head, struct netlink_sock, rcu);
-	struct sock *sk = &nlk->sk;
-
-	if (!atomic_dec_and_test(&sk->sk_refcnt))
-		return;
-
-	if (nlk->cb_running && nlk->cb.done) {
-		INIT_WORK(&nlk->work, netlink_sock_destruct_work);
-		schedule_work(&nlk->work);
-		return;
-	}
-
-	sk_free(sk);
 }
 
 static int netlink_release(struct socket *sock)
@@ -787,7 +755,19 @@ static int netlink_release(struct socket *sock)
 	local_bh_disable();
 	sock_prot_inuse_add(sock_net(sk), &netlink_proto, -1);
 	local_bh_enable();
-	call_rcu(&nlk->rcu, deferred_put_nlk_sk);
+	if (nlk->cb_running) {
+		mutex_lock(nlk->cb_mutex);
+		if (nlk->cb_running) {
+			if (nlk->cb.done)
+				nlk->cb.done(&nlk->cb);
+
+			module_put(nlk->cb.module);
+			kfree_skb(nlk->cb.skb);
+			nlk->cb_running = false;
+		}
+		mutex_unlock(nlk->cb_mutex);
+	}
+	sock_put(sk);
 	return 0;
 }
 
@@ -1003,8 +983,7 @@ static int netlink_bind(struct socket *sock, struct sockaddr *addr,
 	if (nlk->netlink_bind && groups) {
 		int group;
 
-		/* nl_groups is a u32, so cap the maximum groups we can bind */
-		for (group = 0; group < BITS_PER_TYPE(u32); group++) {
+		for (group = 0; group < nlk->ngroups; group++) {
 			if (!test_bit(group, &groups))
 				continue;
 			err = nlk->netlink_bind(net, group + 1);
@@ -1023,7 +1002,7 @@ static int netlink_bind(struct socket *sock, struct sockaddr *addr,
 			netlink_insert(sk, nladdr->nl_pid) :
 			netlink_autobind(sock);
 		if (err) {
-			netlink_undo_bind(BITS_PER_TYPE(u32), groups, sk);
+			netlink_undo_bind(nlk->ngroups, groups, sk);
 			return err;
 		}
 	}

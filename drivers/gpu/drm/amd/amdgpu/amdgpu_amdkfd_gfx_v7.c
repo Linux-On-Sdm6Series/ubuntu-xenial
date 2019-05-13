@@ -154,7 +154,7 @@ static const struct kfd2kgd_calls kfd2kgd = {
 	.get_fw_version = get_fw_version
 };
 
-struct kfd2kgd_calls *amdgpu_amdkfd_gfx_7_get_functions(void)
+struct kfd2kgd_calls *amdgpu_amdkfd_gfx_7_get_functions()
 {
 	return (struct kfd2kgd_calls *)&kfd2kgd;
 }
@@ -504,7 +504,7 @@ static int kgd_hqd_sdma_destroy(struct kgd_dev *kgd, void *mqd,
 
 	while (true) {
 		temp = RREG32(sdma_base_addr + mmSDMA0_RLC0_CONTEXT_STATUS);
-		if (temp & SDMA0_RLC0_CONTEXT_STATUS__IDLE_MASK)
+		if (temp & SDMA0_STATUS_REG__RB_CMD_IDLE__SHIFT)
 			break;
 		if (timeout == 0)
 			return -ETIME;

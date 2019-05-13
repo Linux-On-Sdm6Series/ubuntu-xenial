@@ -50,7 +50,6 @@
 #include <linux/filter.h>
 #include <linux/bpf.h>
 #include <linux/if_packet.h>
-#include <net/if.h>
 #include <net/ethernet.h>
 #include <netinet/ip.h>
 #include <netinet/udp.h>
@@ -72,31 +71,17 @@
 
 /* Open a socket in a given fanout mode.
  * @return -1 if mode is bad, a valid socket otherwise */
-static int sock_fanout_open(uint16_t typeflags)
+static int sock_fanout_open(uint16_t typeflags, int num_packets)
 {
-	struct sockaddr_ll addr = {0};
 	int fd, val;
 
-	fd = socket(PF_PACKET, SOCK_DGRAM, 0);
+	fd = socket(PF_PACKET, SOCK_DGRAM, htons(ETH_P_IP));
 	if (fd < 0) {
 		perror("socket packet");
 		exit(1);
 	}
 
-	pair_udp_setfilter(fd);
-
-	addr.sll_family = AF_PACKET;
-	addr.sll_protocol = htons(ETH_P_IP);
-	addr.sll_ifindex = if_nametoindex("lo");
-	if (addr.sll_ifindex == 0) {
-		perror("if_nametoindex");
-		exit(1);
-	}
-	if (bind(fd, (void *) &addr, sizeof(addr))) {
-		perror("bind packet");
-		exit(1);
-	}
-
+	/* fanout group ID is always 0: tests whether old groups are deleted */
 	val = ((int) typeflags) << 16;
 	if (setsockopt(fd, SOL_PACKET, PACKET_FANOUT, &val, sizeof(val))) {
 		if (close(fd)) {
@@ -106,6 +91,7 @@ static int sock_fanout_open(uint16_t typeflags)
 		return -1;
 	}
 
+	pair_udp_setfilter(fd);
 	return fd;
 }
 
@@ -212,7 +198,7 @@ static int sock_fanout_read(int fds[], char *rings[], const int expect[])
 
 	if ((!(ret[0] == expect[0] && ret[1] == expect[1])) &&
 	    (!(ret[0] == expect[1] && ret[1] == expect[0]))) {
-		fprintf(stderr, "warning: incorrect queue lengths\n");
+		fprintf(stderr, "ERROR: incorrect queue lengths\n");
 		return 1;
 	}
 
@@ -225,7 +211,7 @@ static void test_control_single(void)
 	fprintf(stderr, "test: control single socket\n");
 
 	if (sock_fanout_open(PACKET_FANOUT_ROLLOVER |
-			       PACKET_FANOUT_FLAG_ROLLOVER) != -1) {
+			       PACKET_FANOUT_FLAG_ROLLOVER, 0) != -1) {
 		fprintf(stderr, "ERROR: opened socket with dual rollover\n");
 		exit(1);
 	}
@@ -238,26 +224,26 @@ static void test_control_group(void)
 
 	fprintf(stderr, "test: control multiple sockets\n");
 
-	fds[0] = sock_fanout_open(PACKET_FANOUT_HASH);
+	fds[0] = sock_fanout_open(PACKET_FANOUT_HASH, 20);
 	if (fds[0] == -1) {
 		fprintf(stderr, "ERROR: failed to open HASH socket\n");
 		exit(1);
 	}
 	if (sock_fanout_open(PACKET_FANOUT_HASH |
-			       PACKET_FANOUT_FLAG_DEFRAG) != -1) {
+			       PACKET_FANOUT_FLAG_DEFRAG, 10) != -1) {
 		fprintf(stderr, "ERROR: joined group with wrong flag defrag\n");
 		exit(1);
 	}
 	if (sock_fanout_open(PACKET_FANOUT_HASH |
-			       PACKET_FANOUT_FLAG_ROLLOVER) != -1) {
+			       PACKET_FANOUT_FLAG_ROLLOVER, 10) != -1) {
 		fprintf(stderr, "ERROR: joined group with wrong flag ro\n");
 		exit(1);
 	}
-	if (sock_fanout_open(PACKET_FANOUT_CPU) != -1) {
+	if (sock_fanout_open(PACKET_FANOUT_CPU, 10) != -1) {
 		fprintf(stderr, "ERROR: joined group with wrong mode\n");
 		exit(1);
 	}
-	fds[1] = sock_fanout_open(PACKET_FANOUT_HASH);
+	fds[1] = sock_fanout_open(PACKET_FANOUT_HASH, 20);
 	if (fds[1] == -1) {
 		fprintf(stderr, "ERROR: failed to join group\n");
 		exit(1);
@@ -276,11 +262,10 @@ static int test_datapath(uint16_t typeflags, int port_off,
 	uint8_t type = typeflags & 0xFF;
 	int fds[2], fds_udp[2][2], ret;
 
-	fprintf(stderr, "\ntest: datapath 0x%hx ports %hu,%hu\n",
-		typeflags, PORT_BASE, PORT_BASE + port_off);
+	fprintf(stderr, "test: datapath 0x%hx\n", typeflags);
 
-	fds[0] = sock_fanout_open(typeflags);
-	fds[1] = sock_fanout_open(typeflags);
+	fds[0] = sock_fanout_open(typeflags, 20);
+	fds[1] = sock_fanout_open(typeflags, 20);
 	if (fds[0] == -1 || fds[1] == -1) {
 		fprintf(stderr, "ERROR: failed open\n");
 		exit(1);
@@ -347,7 +332,7 @@ int main(int argc, char **argv)
 	const int expect_cpu0[2][2]	= { { 20, 0 },  { 20, 0 } };
 	const int expect_cpu1[2][2]	= { { 0, 20 },  { 0, 20 } };
 	const int expect_bpf[2][2]	= { { 15, 5 },  { 15, 20 } };
-	int port_off = 2, tries = 20, ret;
+	int port_off = 2, tries = 5, ret;
 
 	test_control_single();
 	test_control_group();
@@ -355,14 +340,10 @@ int main(int argc, char **argv)
 	/* find a set of ports that do not collide onto the same socket */
 	ret = test_datapath(PACKET_FANOUT_HASH, port_off,
 			    expect_hash[0], expect_hash[1]);
-	while (ret) {
+	while (ret && tries--) {
 		fprintf(stderr, "info: trying alternate ports (%d)\n", tries);
 		ret = test_datapath(PACKET_FANOUT_HASH, ++port_off,
 				    expect_hash[0], expect_hash[1]);
-		if (!--tries) {
-			fprintf(stderr, "too many collisions\n");
-			return 1;
-		}
 	}
 
 	ret |= test_datapath(PACKET_FANOUT_HASH | PACKET_FANOUT_FLAG_ROLLOVER,

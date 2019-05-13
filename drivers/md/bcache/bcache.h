@@ -646,10 +646,6 @@ struct cache_set {
 	atomic_long_t		writeback_keys_done;
 	atomic_long_t		writeback_keys_failed;
 
-	atomic_long_t		reclaim;
-	atomic_long_t		flush_write;
-	atomic_long_t		retry_flush_write;
-
 	enum			{
 		ON_ERROR_UNREGISTER,
 		ON_ERROR_PANIC,
@@ -667,8 +663,6 @@ struct cache_set {
 
 #define BUCKET_HASH_BITS	12
 	struct hlist_head	bucket_hash[1 << BUCKET_HASH_BITS];
-
-	DECLARE_HEAP(struct btree *, flush_btree);
 };
 
 struct bbio {
@@ -886,7 +880,7 @@ bool bch_alloc_sectors(struct cache_set *, struct bkey *, unsigned,
 __printf(2, 3)
 bool bch_cache_set_error(struct cache_set *, const char *, ...);
 
-int bch_prio_write(struct cache *ca, bool wait);
+void bch_prio_write(struct cache *);
 void bch_write_bdev_super(struct cached_dev *, struct closure *);
 
 extern struct workqueue_struct *bcache_wq;
@@ -912,7 +906,6 @@ int bch_flash_dev_create(struct cache_set *c, uint64_t size);
 
 int bch_cached_dev_attach(struct cached_dev *, struct cache_set *, uint8_t *);
 void bch_cached_dev_detach(struct cached_dev *);
-void bch_cached_dev_emit_change(struct cached_dev *);
 void bch_cached_dev_run(struct cached_dev *);
 void bcache_device_stop(struct bcache_device *);
 

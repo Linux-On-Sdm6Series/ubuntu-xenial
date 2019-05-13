@@ -93,7 +93,7 @@ static inline void blk_flush_integrity(void)
 }
 #endif
 
-void blk_timeout_work(struct work_struct *work);
+void blk_rq_timed_out_timer(unsigned long data);
 unsigned long blk_rq_timeout(unsigned long timeout);
 void blk_add_timer(struct request *req);
 void blk_delete_timer(struct request *);
@@ -111,6 +111,15 @@ unsigned int blk_plug_queued_count(struct request_queue *q);
 void blk_account_io_start(struct request *req, bool new_io);
 void blk_account_io_completion(struct request *req, unsigned int bytes);
 void blk_account_io_done(struct request *req);
+
+#ifdef CONFIG_BLOCK_PERF_FRAMEWORK
+void blk_update_perf_stats(struct bio *bio);
+#else
+static inline void blk_update_perf_stats(struct bio *bio)
+{
+	(void) bio;
+}
+#endif
 
 /*
  * Internal atomic flags for request handling
@@ -214,7 +223,6 @@ int attempt_back_merge(struct request_queue *q, struct request *rq);
 int attempt_front_merge(struct request_queue *q, struct request *rq);
 int blk_attempt_req_merge(struct request_queue *q, struct request *rq,
 				struct request *next);
-void blk_recalc_rq_segments(struct request *rq);
 void blk_rq_set_mixed_merge(struct request *rq);
 bool blk_rq_merge_ok(struct request *rq, struct bio *bio);
 int blk_try_merge(struct request *rq, struct bio *bio);

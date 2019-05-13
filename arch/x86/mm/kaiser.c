@@ -10,7 +10,6 @@
 #include <linux/mm.h>
 #include <linux/uaccess.h>
 #include <linux/ftrace.h>
-#include <linux/cpu.h>
 
 #undef pr_fmt
 #define pr_fmt(fmt)     "Kernel/User page tables isolation: " fmt
@@ -20,7 +19,6 @@
 #include <asm/pgtable.h>
 #include <asm/pgalloc.h>
 #include <asm/desc.h>
-#include <asm/sections.h>
 #include <asm/cmdline.h>
 #include <asm/vsyscall.h>
 
@@ -280,6 +278,7 @@ static void __init kaiser_init_all_pgds(void)
 
 void __init kaiser_check_boottime_disable(void)
 {
+	bool enable = true;
 	char arg[5];
 	int ret;
 
@@ -298,16 +297,17 @@ void __init kaiser_check_boottime_disable(void)
 			goto skip;
 	}
 
-	if (cmdline_find_option_bool(boot_command_line, "nopti") ||
-	    cpu_mitigations_off())
+	if (cmdline_find_option_bool(boot_command_line, "nopti"))
 		goto disable;
 
 skip:
-	if (!boot_cpu_has_bug(X86_BUG_CPU_MELTDOWN))
+	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD)
 		goto disable;
 
 enable:
-	setup_force_cpu_cap(X86_FEATURE_KAISER);
+	if (enable)
+		setup_force_cpu_cap(X86_FEATURE_KAISER);
+
 	return;
 
 disable:

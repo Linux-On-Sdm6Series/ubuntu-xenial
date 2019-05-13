@@ -64,6 +64,11 @@ ifneq ($(hostprogs-y)$(hostprogs-m),)
 include scripts/Makefile.host
 endif
 
+# Do not include host rules unless needed
+ifneq ($(dtbo-y),)
+include scripts/Makefile.dtbo
+endif
+
 ifneq ($(KBUILD_SRC),)
 # Create output directory if not already present
 _dummy := $(shell [ -d $(obj) ] || mkdir -p $(obj))
@@ -251,17 +256,10 @@ cmd_record_mcount =						\
 	fi;
 endif
 
-ifdef CONFIG_RETPOLINE
-cmd_ubuntu_retpoline = $(CONFIG_SHELL) $(srctree)/scripts/ubuntu-retpoline-extract-one $(@) $(<) "$(filter -m16 %code16gcc.h,$(a_flags))";
-else
-cmd_ubuntu_retpoline =
-endif
-
 define rule_cc_o_c
 	$(call echo-cmd,checksrc) $(cmd_checksrc)			  \
 	$(call echo-cmd,cc_o_c) $(cmd_cc_o_c);				  \
 	$(cmd_modversions_c)						  \
-	$(call echo-cmd,ubuntu-retpoline) $(cmd_ubuntu_retpoline)	  \
 	$(call echo-cmd,record_mcount)					  \
 	$(cmd_record_mcount)						  \
 	scripts/basic/fixdep $(depfile) $@ '$(call make-cmd,cc_o_c)' >    \
@@ -275,7 +273,6 @@ define rule_as_o_S
        scripts/basic/fixdep $(depfile) $@ '$(call make-cmd,as_o_S)' >    \
                                                      $(dot-target).tmp;  \
        $(cmd_modversions_S)						 \
-       $(call echo-cmd,ubuntu-retpoline) $(cmd_ubuntu_retpoline)	 \
        rm -f $(depfile);                                                 \
        mv -f $(dot-target).tmp $(dot-target).cmd
 endef

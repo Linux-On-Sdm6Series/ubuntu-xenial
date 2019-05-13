@@ -436,8 +436,9 @@ static void null_del_dev(struct nullb *nullb)
 static void null_lnvm_end_io(struct request *rq, int error)
 {
 	struct nvm_rq *rqd = rq->end_io_data;
+	struct nvm_dev *dev = rqd->dev;
 
-	nvm_end_io(rqd, error);
+	dev->mt->end_io(rqd, error);
 
 	blk_put_request(rq);
 }
@@ -448,7 +449,7 @@ static int null_lnvm_submit_io(struct nvm_dev *dev, struct nvm_rq *rqd)
 	struct request *rq;
 	struct bio *bio = rqd->bio;
 
-	rq = blk_mq_alloc_request(q, bio_rw(bio), 0);
+	rq = blk_mq_alloc_request(q, bio_rw(bio), GFP_KERNEL, 0);
 	if (IS_ERR(rq))
 		return -ENOMEM;
 

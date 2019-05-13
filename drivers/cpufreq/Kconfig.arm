@@ -95,15 +95,6 @@ config ARM_OMAP2PLUS_CPUFREQ
 	depends on ARCH_OMAP2PLUS
 	default ARCH_OMAP2PLUS
 
-config ARM_QCOM_CPUFREQ
-	tristate "Qualcomm based"
-	depends on ARCH_QCOM
-	select PM_OPP
-	help
-	  This adds the CPUFreq driver for Qualcomm SoC based boards.
-
-	  If in doubt, say N.
-
 config ARM_S3C_CPUFREQ
 	bool
 	help
@@ -264,3 +255,10 @@ config ACPI_CPPC_CPUFREQ
 	  support for its operation.
 
 	  If in doubt, say N.
+
+config CPU_FREQ_MSM
+	bool "MSM CPUFreq support"
+	depends on CPU_FREQ
+	default y
+	help
+	  This enables the CPUFreq driver for Qualcomm CPUs.

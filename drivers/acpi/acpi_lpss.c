@@ -15,7 +15,6 @@
 #include <linux/clk-provider.h>
 #include <linux/err.h>
 #include <linux/io.h>
-#include <linux/mutex.h>
 #include <linux/platform_device.h>
 #include <linux/platform_data/clk-lpss.h>
 #include <linux/pm_runtime.h>
@@ -26,10 +25,6 @@
 ACPI_MODULE_NAME("acpi_lpss");
 
 #ifdef CONFIG_X86_INTEL_LPSS
-
-#include <asm/cpu_device_id.h>
-#include <asm/iosf_mbi.h>
-#include <asm/pmc_atom.h>
 
 #define LPSS_ADDR(desc) ((unsigned long)&desc)
 
@@ -76,7 +71,7 @@ struct lpss_device_desc {
 	void (*setup)(struct lpss_private_data *pdata);
 };
 
-static const struct lpss_device_desc lpss_dma_desc = {
+static struct lpss_device_desc lpss_dma_desc = {
 	.flags = LPSS_CLK,
 };
 
@@ -88,23 +83,6 @@ struct lpss_private_data {
 	const struct lpss_device_desc *dev_desc;
 	u32 prv_reg_ctx[LPSS_PRV_REG_COUNT];
 };
-
-/* LPSS run time quirks */
-static unsigned int lpss_quirks;
-
-/*
- * LPSS_QUIRK_ALWAYS_POWER_ON: override power state for LPSS DMA device.
- *
- * The LPSS DMA controller does not have neither _PS0 nor _PS3 method. Moreover
- * it can be powered off automatically whenever the last LPSS device goes down.
- * In case of no power any access to the DMA controller will hang the system.
- * The behaviour is reproduced on some HP laptops based on Intel BayTrail as
- * well as on ASuS T100TA transformer.
- *
- * This quirk overrides power state of entire LPSS island to keep DMA powered
- * on whenever we have at least one other device in use.
- */
-#define LPSS_QUIRK_ALWAYS_POWER_ON	BIT(0)
 
 /* UART Component Parameter Register */
 #define LPSS_UART_CPR			0xF4
@@ -220,19 +198,11 @@ static const struct lpss_device_desc bsw_i2c_dev_desc = {
 	.setup = byt_i2c_setup,
 };
 
-static const struct lpss_device_desc bsw_spi_dev_desc = {
+static struct lpss_device_desc bsw_spi_dev_desc = {
 	.flags = LPSS_CLK | LPSS_CLK_GATE | LPSS_CLK_DIVIDER | LPSS_SAVE_CTX
 			| LPSS_NO_D3_DELAY,
 	.prv_offset = 0x400,
 	.setup = lpss_deassert_reset,
-};
-
-#define ICPU(model)	{ X86_VENDOR_INTEL, 6, model, X86_FEATURE_ANY, }
-
-static const struct x86_cpu_id lpss_cpu_ids[] = {
-	ICPU(0x37),	/* Valleyview, Bay Trail */
-	ICPU(0x4c),	/* Braswell, Cherry Trail */
-	{}
 };
 
 #else
@@ -265,11 +235,9 @@ static const struct acpi_device_id acpi_lpss_device_ids[] = {
 	{ "INT33FC", },
 
 	/* Braswell LPSS devices */
-	{ "80862286", LPSS_ADDR(lpss_dma_desc) },
 	{ "80862288", LPSS_ADDR(bsw_pwm_dev_desc) },
 	{ "8086228A", LPSS_ADDR(bsw_uart_dev_desc) },
 	{ "8086228E", LPSS_ADDR(bsw_spi_dev_desc) },
-	{ "808622C0", LPSS_ADDR(lpss_dma_desc) },
 	{ "808622C1", LPSS_ADDR(bsw_i2c_dev_desc) },
 
 	/* Broadwell LPSS devices */
@@ -435,7 +403,12 @@ static int acpi_lpss_create_device(struct acpi_device *adev,
 	 * have _PS0 and _PS3 without _PSC (and no power resources), so
 	 * acpi_bus_init_power() will assume that the BIOS has put them into D0.
 	 */
-	acpi_device_fix_up_power(adev);
+	ret = acpi_device_fix_up_power(adev);
+	if (ret) {
+		/* Skip the device, but continue the namespace scan. */
+		ret = 0;
+		goto err_out;
+	}
 
 	adev->driver_data = pdata;
 	pdev = acpi_create_platform_device(adev);
@@ -657,89 +630,6 @@ static int acpi_lpss_resume_early(struct device *dev)
 }
 #endif /* CONFIG_PM_SLEEP */
 
-/* IOSF SB for LPSS island */
-#define LPSS_IOSF_UNIT_LPIOEP		0xA0
-#define LPSS_IOSF_UNIT_LPIO1		0xAB
-#define LPSS_IOSF_UNIT_LPIO2		0xAC
-
-#define LPSS_IOSF_PMCSR			0x84
-#define LPSS_PMCSR_D0			0
-#define LPSS_PMCSR_D3hot		3
-#define LPSS_PMCSR_Dx_MASK		GENMASK(1, 0)
-
-#define LPSS_IOSF_GPIODEF0		0x154
-#define LPSS_GPIODEF0_DMA1_D3		BIT(2)
-#define LPSS_GPIODEF0_DMA2_D3		BIT(3)
-#define LPSS_GPIODEF0_DMA_D3_MASK	GENMASK(3, 2)
-
-static DEFINE_MUTEX(lpss_iosf_mutex);
-
-static void lpss_iosf_enter_d3_state(void)
-{
-	u32 value1 = 0;
-	u32 mask1 = LPSS_GPIODEF0_DMA_D3_MASK;
-	u32 value2 = LPSS_PMCSR_D3hot;
-	u32 mask2 = LPSS_PMCSR_Dx_MASK;
-	/*
-	 * PMC provides an information about actual status of the LPSS devices.
-	 * Here we read the values related to LPSS power island, i.e. LPSS
-	 * devices, excluding both LPSS DMA controllers, along with SCC domain.
-	 */
-	u32 func_dis, d3_sts_0, pmc_status, pmc_mask = 0xfe000ffe;
-	int ret;
-
-	ret = pmc_atom_read(PMC_FUNC_DIS, &func_dis);
-	if (ret)
-		return;
-
-	mutex_lock(&lpss_iosf_mutex);
-
-	ret = pmc_atom_read(PMC_D3_STS_0, &d3_sts_0);
-	if (ret)
-		goto exit;
-
-	/*
-	 * Get the status of entire LPSS power island per device basis.
-	 * Shutdown both LPSS DMA controllers if and only if all other devices
-	 * are already in D3hot.
-	 */
-	pmc_status = (~(d3_sts_0 | func_dis)) & pmc_mask;
-	if (pmc_status)
-		goto exit;
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIO1, MBI_CFG_WRITE,
-			LPSS_IOSF_PMCSR, value2, mask2);
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIO2, MBI_CFG_WRITE,
-			LPSS_IOSF_PMCSR, value2, mask2);
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIOEP, MBI_CR_WRITE,
-			LPSS_IOSF_GPIODEF0, value1, mask1);
-exit:
-	mutex_unlock(&lpss_iosf_mutex);
-}
-
-static void lpss_iosf_exit_d3_state(void)
-{
-	u32 value1 = LPSS_GPIODEF0_DMA1_D3 | LPSS_GPIODEF0_DMA2_D3;
-	u32 mask1 = LPSS_GPIODEF0_DMA_D3_MASK;
-	u32 value2 = LPSS_PMCSR_D0;
-	u32 mask2 = LPSS_PMCSR_Dx_MASK;
-
-	mutex_lock(&lpss_iosf_mutex);
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIOEP, MBI_CR_WRITE,
-			LPSS_IOSF_GPIODEF0, value1, mask1);
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIO2, MBI_CFG_WRITE,
-			LPSS_IOSF_PMCSR, value2, mask2);
-
-	iosf_mbi_modify(LPSS_IOSF_UNIT_LPIO1, MBI_CFG_WRITE,
-			LPSS_IOSF_PMCSR, value2, mask2);
-
-	mutex_unlock(&lpss_iosf_mutex);
-}
-
 static int acpi_lpss_runtime_suspend(struct device *dev)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
@@ -752,30 +642,13 @@ static int acpi_lpss_runtime_suspend(struct device *dev)
 	if (pdata->dev_desc->flags & LPSS_SAVE_CTX)
 		acpi_lpss_save_ctx(dev, pdata);
 
-	ret = acpi_dev_runtime_suspend(dev);
-
-	/*
-	 * This call must be last in the sequence, otherwise PMC will return
-	 * wrong status for devices being about to be powered off. See
-	 * lpss_iosf_enter_d3_state() for further information.
-	 */
-	if (lpss_quirks & LPSS_QUIRK_ALWAYS_POWER_ON && iosf_mbi_available())
-		lpss_iosf_enter_d3_state();
-
-	return ret;
+	return acpi_dev_runtime_suspend(dev);
 }
 
 static int acpi_lpss_runtime_resume(struct device *dev)
 {
 	struct lpss_private_data *pdata = acpi_driver_data(ACPI_COMPANION(dev));
 	int ret;
-
-	/*
-	 * This call is kept first to be in symmetry with
-	 * acpi_lpss_runtime_suspend() one.
-	 */
-	if (lpss_quirks & LPSS_QUIRK_ALWAYS_POWER_ON && iosf_mbi_available())
-		lpss_iosf_exit_d3_state();
 
 	ret = acpi_dev_runtime_resume(dev);
 	if (ret)
@@ -883,19 +756,10 @@ static struct acpi_scan_handler lpss_handler = {
 
 void __init acpi_lpss_init(void)
 {
-	const struct x86_cpu_id *id;
-	int ret;
-
-	ret = lpt_clk_init();
-	if (ret)
-		return;
-
-	id = x86_match_cpu(lpss_cpu_ids);
-	if (id)
-		lpss_quirks |= LPSS_QUIRK_ALWAYS_POWER_ON;
-
-	bus_register_notifier(&platform_bus_type, &acpi_lpss_nb);
-	acpi_scan_add_handler(&lpss_handler);
+	if (!lpt_clk_init()) {
+		bus_register_notifier(&platform_bus_type, &acpi_lpss_nb);
+		acpi_scan_add_handler(&lpss_handler);
+	}
 }
 
 #else

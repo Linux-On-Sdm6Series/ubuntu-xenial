@@ -249,9 +249,6 @@ struct i915_hotplug {
 	u32 short_port_mask;
 	struct work_struct dig_port_work;
 
-	struct work_struct poll_init_work;
-	bool poll_enabled;
-
 	/*
 	 * if we get a HPD irq from DP and a HPD irq from non-DP
 	 * the non-DP HPD could block the workqueue on a mode config
@@ -1156,7 +1153,6 @@ struct intel_gen6_power_mgmt {
 	bool client_boost;
 
 	bool enabled;
-	bool ctx_corrupted;
 	struct delayed_work delayed_resume_work;
 	unsigned boosts;
 
@@ -2559,10 +2555,6 @@ struct drm_i915_cmd_table {
 
 /* Early gen2 have a totally busted CS tlb and require pinned batches. */
 #define HAS_BROKEN_CS_TLB(dev)		(IS_I830(dev) || IS_845G(dev))
-
-#define NEEDS_RC6_CTX_CORRUPTION_WA(dev)	\
-	(IS_BROADWELL(dev) || INTEL_INFO(dev)->gen == 9)
-
 /*
  * dp aux and gmbus irq on gen4 seems to be able to generate legacy interrupts
  * even when in MSI mode. This results in spurious interrupt warnings if the
@@ -2713,8 +2705,6 @@ void intel_hpd_init(struct drm_i915_private *dev_priv);
 void intel_hpd_init_work(struct drm_i915_private *dev_priv);
 void intel_hpd_cancel_work(struct drm_i915_private *dev_priv);
 bool intel_hpd_pin_to_port(enum hpd_pin pin, enum port *port);
-bool intel_hpd_disable(struct drm_i915_private *dev_priv, enum hpd_pin pin);
-void intel_hpd_enable(struct drm_i915_private *dev_priv, enum hpd_pin pin);
 
 /* i915_irq.c */
 void i915_queue_hangcheck(struct drm_device *dev);
@@ -3483,11 +3473,6 @@ static inline uint32_t i915_vgacntrl_reg(struct drm_device *dev)
 		return CPU_VGACNTRL;
 	else
 		return VGACNTRL;
-}
-
-static inline void __user *to_user_ptr(u64 address)
-{
-	return (void __user *)(uintptr_t)address;
 }
 
 static inline unsigned long msecs_to_jiffies_timeout(const unsigned int m)

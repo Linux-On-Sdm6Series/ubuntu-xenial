@@ -39,7 +39,6 @@
 #include <linux/memory.h>
 #include <linux/nmi.h>
 #include <linux/debugfs.h>
-#include <linux/cpu.h>
 
 #include <asm/io.h>
 #include <asm/kdump.h>
@@ -711,6 +710,9 @@ void __init setup_arch(char **cmdline_p)
 	dcache_bsize = ppc64_caches.dline_size;
 	icache_bsize = ppc64_caches.iline_size;
 
+	if (ppc_md.panic)
+		setup_panic();
+
 	init_mm.start_code = (unsigned long)_stext;
 	init_mm.end_code = (unsigned long) _etext;
 	init_mm.end_data = (unsigned long) _edata;
@@ -733,9 +735,6 @@ void __init setup_arch(char **cmdline_p)
 
 	if (ppc_md.setup_arch)
 		ppc_md.setup_arch();
-
-	setup_barrier_nospec();
-	setup_spectre_v2();
 
 	paging_init();
 
@@ -874,6 +873,9 @@ static void do_nothing(void *unused)
 
 void rfi_flush_enable(bool enable)
 {
+	if (rfi_flush == enable)
+		return;
+
 	if (enable) {
 		do_rfi_flush_fixups(enabled_flush_types);
 		on_each_cpu(do_nothing, NULL, 1);
@@ -883,22 +885,10 @@ void rfi_flush_enable(bool enable)
 	rfi_flush = enable;
 }
 
-static bool __ref init_fallback_flush(void)
+static void init_fallback_flush(void)
 {
 	u64 l1d_size, limit;
 	int cpu;
-
-	/* Only allocate the fallback flush area once (at boot time). */
-	if (l1d_flush_fallback_area)
-		return true;
-
-	/*
-	 * Once the slab allocator is up it's too late to allocate the fallback
-	 * flush area, so return an error. This could happen if we migrated from
-	 * a patched machine to an unpatched machine.
-	 */
-	if (slab_is_available())
-		return false;
 
 	l1d_size = ppc64_caches.dsize;
 	limit = min(safe_stack_limit(), ppc64_rma_size);
@@ -912,51 +902,50 @@ static bool __ref init_fallback_flush(void)
 	memset(l1d_flush_fallback_area, 0, l1d_size * 2);
 
 	for_each_possible_cpu(cpu) {
-		paca[cpu].rfi_flush_fallback_area = l1d_flush_fallback_area;
-		paca[cpu].l1d_flush_size = l1d_size;
-	}
+		/*
+		 * The fallback flush is currently coded for 8-way
+		 * associativity. Different associativity is possible, but it
+		 * will be treated as 8-way and may not evict the lines as
+		 * effectively.
+		 *
+		 * 128 byte lines are mandatory.
+		 */
+		u64 c = l1d_size / 8;
 
-	return true;
+		paca[cpu].rfi_flush_fallback_area = l1d_flush_fallback_area;
+		paca[cpu].l1d_flush_congruence = c;
+		paca[cpu].l1d_flush_sets = c / 128;
+	}
 }
 
-void setup_rfi_flush(enum l1d_flush_type types, bool enable)
+void __init setup_rfi_flush(enum l1d_flush_type types, bool enable)
 {
 	if (types & L1D_FLUSH_FALLBACK) {
-		if (init_fallback_flush())
-			pr_info("rfi-flush: Using fallback displacement flush\n");
-		else {
-			pr_warn("rfi-flush: Error unable to use fallback displacement flush!\n");
-			types &= ~L1D_FLUSH_FALLBACK;
-		}
+		pr_info("rfi-flush: Using fallback displacement flush\n");
+		init_fallback_flush();
 	}
 
 	if (types & L1D_FLUSH_ORI)
-		pr_info("rfi-flush: ori type flush available\n");
+		pr_info("rfi-flush: Using ori type flush\n");
 
 	if (types & L1D_FLUSH_MTTRIG)
-		pr_info("rfi-flush: mttrig type flush available\n");
+		pr_info("rfi-flush: Using mttrig type flush\n");
 
 	enabled_flush_types = types;
 
-	if (!no_rfi_flush && !cpu_mitigations_off())
+	if (!no_rfi_flush)
 		rfi_flush_enable(enable);
 }
 
 #ifdef CONFIG_DEBUG_FS
 static int rfi_flush_set(void *data, u64 val)
 {
-	bool enable;
-
 	if (val == 1)
-		enable = true;
+		rfi_flush_enable(true);
 	else if (val == 0)
-		enable = false;
+		rfi_flush_enable(false);
 	else
 		return -EINVAL;
-
-	/* Only do anything if we're changing state */
-	if (enable != rfi_flush)
-		rfi_flush_enable(enable);
 
 	return 0;
 }
@@ -976,4 +965,12 @@ static __init int rfi_flush_debugfs_init(void)
 }
 device_initcall(rfi_flush_debugfs_init);
 #endif
+
+ssize_t cpu_show_meltdown(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	if (rfi_flush)
+		return sprintf(buf, "Mitigation: RFI Flush\n");
+
+	return sprintf(buf, "Vulnerable\n");
+}
 #endif /* CONFIG_PPC_BOOK3S_64 */

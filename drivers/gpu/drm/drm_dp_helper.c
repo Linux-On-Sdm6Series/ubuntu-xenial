@@ -28,7 +28,6 @@
 #include <linux/sched.h>
 #include <linux/i2c.h>
 #include <drm/drm_dp_helper.h>
-#include <drm/drm_dp_aux_dev.h>
 #include <drm/drmP.h>
 
 /**
@@ -762,8 +761,6 @@ static const struct i2c_algorithm drm_dp_i2c_algo = {
  */
 int drm_dp_aux_register(struct drm_dp_aux *aux)
 {
-	int ret;
-
 	mutex_init(&aux->hw_mutex);
 
 	aux->ddc.algo = &drm_dp_i2c_algo;
@@ -778,17 +775,7 @@ int drm_dp_aux_register(struct drm_dp_aux *aux)
 	strlcpy(aux->ddc.name, aux->name ? aux->name : dev_name(aux->dev),
 		sizeof(aux->ddc.name));
 
-	ret = drm_dp_aux_register_devnode(aux);
-	if (ret)
-		return ret;
-
-	ret = i2c_add_adapter(&aux->ddc);
-	if (ret) {
-		drm_dp_aux_unregister_devnode(aux);
-		return ret;
-	}
-
-	return 0;
+	return i2c_add_adapter(&aux->ddc);
 }
 EXPORT_SYMBOL(drm_dp_aux_register);
 
@@ -798,7 +785,6 @@ EXPORT_SYMBOL(drm_dp_aux_register);
  */
 void drm_dp_aux_unregister(struct drm_dp_aux *aux)
 {
-	drm_dp_aux_unregister_devnode(aux);
 	i2c_del_adapter(&aux->ddc);
 }
 EXPORT_SYMBOL(drm_dp_aux_unregister);

@@ -17,7 +17,6 @@
 #include <linux/init.h>
 #include <linux/acpi.h>
 #include <linux/thermal.h>
-#include <linux/nospec.h>
 #include "int340x_thermal_zone.h"
 
 static int int340x_thermal_get_zone_temp(struct thermal_zone_device *zone,
@@ -58,16 +57,15 @@ static int int340x_thermal_get_trip_temp(struct thermal_zone_device *zone,
 	if (d->override_ops && d->override_ops->get_trip_temp)
 		return d->override_ops->get_trip_temp(zone, trip, temp);
 
-	if (trip < d->aux_trip_nr) {
-		trip = array_index_nospec(trip, d->aux_trip_nr); /* needed? */
+	if (trip < d->aux_trip_nr)
 		*temp = d->aux_trips[trip];
-	} else if (trip == d->crt_trip_id) {
+	else if (trip == d->crt_trip_id)
 		*temp = d->crt_temp;
-	} else if (trip == d->psv_trip_id) {
+	else if (trip == d->psv_trip_id)
 		*temp = d->psv_temp;
-	} else if (trip == d->hot_trip_id) {
+	else if (trip == d->hot_trip_id)
 		*temp = d->hot_temp;
-	} else {
+	else {
 		for (i = 0; i < INT340X_THERMAL_MAX_ACT_TRIP_COUNT; i++) {
 			if (d->act_trips[i].valid &&
 			    d->act_trips[i].id == trip) {

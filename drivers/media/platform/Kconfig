@@ -119,7 +119,6 @@ source "drivers/media/platform/exynos4-is/Kconfig"
 source "drivers/media/platform/s5p-tv/Kconfig"
 source "drivers/media/platform/am437x/Kconfig"
 source "drivers/media/platform/xilinx/Kconfig"
-source "drivers/media/platform/msm/Kconfig"
 
 endif # V4L_PLATFORM_DRIVERS
 
@@ -304,3 +303,5 @@ menuconfig DVB_PLATFORM_DRIVERS
 if DVB_PLATFORM_DRIVERS
 source "drivers/media/platform/sti/c8sectpfe/Kconfig"
 endif #DVB_PLATFORM_DRIVERS
+
+source "drivers/media/platform/msm/Kconfig"

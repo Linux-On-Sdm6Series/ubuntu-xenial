@@ -28,7 +28,7 @@
 #include <linux/err.h>
 #include <linux/string.h>
 #include <linux/mm.h>
-#include <linux/fs.h>
+#include <linux/bio.h>
 
 struct linux_binprm;
 struct cred;
@@ -85,8 +85,6 @@ extern int cap_inode_setxattr(struct dentry *dentry, const char *name,
 extern int cap_inode_removexattr(struct dentry *dentry, const char *name);
 extern int cap_inode_need_killpriv(struct dentry *dentry);
 extern int cap_inode_killpriv(struct dentry *dentry);
-extern int cap_inode_getsecurity(const struct inode *inode, const char *name,
-				 void **buffer, bool alloc);
 extern int cap_mmap_addr(unsigned long addr);
 extern int cap_mmap_file(struct file *file, unsigned long reqprot,
 			 unsigned long prot, unsigned long flags);
@@ -247,6 +245,7 @@ int security_old_inode_init_security(struct inode *inode, struct inode *dir,
 				     const struct qstr *qstr, const char **name,
 				     void **value, size_t *len);
 int security_inode_create(struct inode *dir, struct dentry *dentry, umode_t mode);
+int security_inode_post_create(struct inode *dir, struct dentry *dentry, umode_t mode);
 int security_inode_link(struct dentry *old_dentry, struct inode *dir,
 			 struct dentry *new_dentry);
 int security_inode_unlink(struct inode *dir, struct dentry *dentry);
@@ -602,6 +601,13 @@ static inline int security_old_inode_init_security(struct inode *inode,
 }
 
 static inline int security_inode_create(struct inode *dir,
+					 struct dentry *dentry,
+					 umode_t mode)
+{
+	return 0;
+}
+
+static inline int security_inode_post_create(struct inode *dir,
 					 struct dentry *dentry,
 					 umode_t mode)
 {
@@ -1588,15 +1594,7 @@ static inline void security_audit_rule_free(void *lsmrule)
 #endif /* CONFIG_AUDIT */
 
 #ifdef CONFIG_SECURITYFS
-extern int securityfs_pin_fs(void);
-extern int __securityfs_setup_d_inode(struct inode *dir, struct dentry *dentry,
-				      umode_t mode, void *data,
-				      const struct file_operations *fops,
-				      const struct inode_operations *iops);
-extern struct dentry *securityfs_create_dentry(const char *name, umode_t mode,
-				        struct dentry *parent, void *data,
-					const struct file_operations *fops,
-					const struct inode_operations *iops);
+
 extern struct dentry *securityfs_create_file(const char *name, umode_t mode,
 					     struct dentry *parent, void *data,
 					     const struct file_operations *fops);
@@ -1604,28 +1602,6 @@ extern struct dentry *securityfs_create_dir(const char *name, struct dentry *par
 extern void securityfs_remove(struct dentry *dentry);
 
 #else /* CONFIG_SECURITYFS */
-static inline int securityfs_pin_fs(void)
-{
-	return -ENODEV;
-}
-
-static inline int __securityfs_setup_d_inode(struct inode *dir,
-					struct dentry *dentry,
-					umode_t mode, void *data,
-					const struct file_operations *fops,
-					const struct inode_operations *iops)
-{
-	return -ENODEV;
-}
-
-static inline struct dentry *securityfs_create_dentry(const char *name,
-					umode_t mode,
-					struct dentry *parent, void *data,
-					const struct file_operations *fops,
-					const struct inode_operations *iops)
-{
-	return ERR_PTR(-ENODEV);
-}
 
 static inline struct dentry *securityfs_create_dir(const char *name,
 						   struct dentry *parent)

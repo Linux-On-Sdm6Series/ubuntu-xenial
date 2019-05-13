@@ -29,7 +29,6 @@
 #include <linux/kallsyms.h>
 #include <linux/ftrace.h>
 
-#include <asm/text-patching.h>
 #include <asm/cacheflush.h>
 #include <asm/desc.h>
 #include <asm/pgtable.h>
@@ -38,7 +37,6 @@
 #include <asm/insn.h>
 #include <asm/debugreg.h>
 #include <asm/nospec-branch.h>
-#include <asm/sections.h>
 
 #include "common.h"
 

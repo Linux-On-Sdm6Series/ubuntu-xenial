@@ -146,6 +146,12 @@ struct bond_parm_tbl {
 	int mode;
 };
 
+struct netdev_notify_work {
+	struct delayed_work	work;
+	struct net_device	*dev;
+	struct netdev_bonding_info bonding_info;
+};
+
 struct slave {
 	struct net_device *dev; /* first - useful for panic debug */
 	struct bonding *bond; /* our master */
@@ -159,8 +165,7 @@ struct slave {
 	u8     backup:1,   /* indicates backup slave. Value corresponds with
 			      BOND_STATE_ACTIVE and BOND_STATE_BACKUP */
 	       inactive:1, /* indicates inactive slave */
-	       should_notify:1, /* indicates whether the state changed */
-	       should_notify_link:1; /* indicates whether the link changed */
+	       should_notify:1; /* indicateds whether the state changed */
 	u8     duplex;
 	u32    original_mtu;
 	u32    link_failure_count;
@@ -172,7 +177,6 @@ struct slave {
 #ifdef CONFIG_NET_POLL_CONTROLLER
 	struct netpoll *np;
 #endif
-	struct delayed_work notify_work;
 	struct kobject kobj;
 	struct rtnl_link_stats64 slave_stats;
 };
@@ -501,35 +505,10 @@ static inline bool bond_is_slave_inactive(struct slave *slave)
 	return slave->inactive;
 }
 
-static inline void bond_set_slave_link_state(struct slave *slave, int state,
-					     bool notify)
+static inline void bond_set_slave_link_state(struct slave *slave, int state)
 {
-	if (slave->link == state)
-		return;
-
 	slave->link = state;
-	if (notify) {
-		bond_queue_slave_event(slave);
-		slave->should_notify_link = 0;
-	} else {
-		if (slave->should_notify_link)
-			slave->should_notify_link = 0;
-		else
-			slave->should_notify_link = 1;
-	}
-}
-
-static inline void bond_slave_link_notify(struct bonding *bond)
-{
-	struct list_head *iter;
-	struct slave *tmp;
-
-	bond_for_each_slave(bond, tmp, iter) {
-		if (tmp->should_notify_link) {
-			bond_queue_slave_event(tmp);
-			tmp->should_notify_link = 0;
-		}
-	}
+	bond_queue_slave_event(slave);
 }
 
 static inline __be32 bond_confirm_addr(struct net_device *dev, __be32 dst, __be32 local)

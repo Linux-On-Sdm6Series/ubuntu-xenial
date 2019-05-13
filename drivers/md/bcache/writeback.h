@@ -25,7 +25,7 @@ static inline uint64_t  bcache_flash_devs_sectors_dirty(struct cache_set *c)
 
 		if (!d || !UUID_FLASH_ONLY(&c->uuids[i]))
 			continue;
-		ret += bcache_dev_sectors_dirty(d);
+	   ret += bcache_dev_sectors_dirty(d);
 	}
 
 	mutex_unlock(&bch_register_lock);
@@ -66,9 +66,6 @@ static inline bool should_writeback(struct cached_dev *dc, struct bio *bio,
 	if (cache_mode != CACHE_MODE_WRITEBACK ||
 	    test_bit(BCACHE_DEV_DETACHING, &dc->disk.flags) ||
 	    in_use > CUTOFF_WRITEBACK_SYNC)
-		return false;
-
-	if (bio->bi_rw & REQ_DISCARD)
 		return false;
 
 	if (dc->partial_stripes_expensive &&

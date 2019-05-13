@@ -394,7 +394,7 @@ int bdev_read_page(struct block_device *bdev, sector_t sector,
 	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return result;
 
-	result = blk_queue_enter(bdev->bd_queue, false);
+	result = blk_queue_enter(bdev->bd_queue, GFP_KERNEL);
 	if (result)
 		return result;
 	result = ops->rw_page(bdev, sector + get_start_sect(bdev), page, READ);
@@ -431,7 +431,7 @@ int bdev_write_page(struct block_device *bdev, sector_t sector,
 
 	if (!ops->rw_page || bdev_get_integrity(bdev))
 		return -EOPNOTSUPP;
-	result = blk_queue_enter(bdev->bd_queue, false);
+	result = blk_queue_enter(bdev->bd_queue, GFP_KERNEL);
 	if (result)
 		return result;
 
@@ -716,21 +716,12 @@ static struct block_device *bd_acquire(struct inode *inode)
 
 	spin_lock(&bdev_lock);
 	bdev = inode->i_bdev;
-	if (bdev && !inode_unhashed(bdev->bd_inode)) {
+	if (bdev) {
 		ihold(bdev->bd_inode);
 		spin_unlock(&bdev_lock);
 		return bdev;
 	}
 	spin_unlock(&bdev_lock);
-
-	/*
-	 * i_bdev references block device inode that was already shut down
-	 * (corresponding device got removed).  Remove the reference and look
-	 * up block device inode again just in case new device got
-	 * reestablished under the same device number.
-	 */
-	if (bdev)
-		bd_forget(inode);
 
 	bdev = bdget(inode->i_rdev);
 	if (bdev) {
@@ -1232,8 +1223,8 @@ static int __blkdev_get(struct block_device *bdev, fmode_t mode, int for_part)
 		bdev->bd_disk = disk;
 		bdev->bd_queue = disk->queue;
 		bdev->bd_contains = bdev;
-		bdev->bd_inode->i_flags = disk->fops->direct_access ? S_DAX : 0;
 
+		bdev->bd_inode->i_flags = disk->fops->direct_access ? S_DAX : 0;
 		if (!partno) {
 			ret = -ENXIO;
 			bdev->bd_part = disk_get_part(disk, partno);
@@ -1457,14 +1448,9 @@ struct block_device *blkdev_get_by_path(const char *path, fmode_t mode,
 					void *holder)
 {
 	struct block_device *bdev;
-	int perm = 0;
 	int err;
 
-	if (mode & FMODE_READ)
-		perm |= MAY_READ;
-	if (mode & FMODE_WRITE)
-		perm |= MAY_WRITE;
-	bdev = lookup_bdev(path, perm);
+	bdev = lookup_bdev(path);
 	if (IS_ERR(bdev))
 		return bdev;
 
@@ -1542,20 +1528,6 @@ static int blkdev_open(struct inode * inode, struct file * filp)
 	bdev = bd_acquire(inode);
 	if (bdev == NULL)
 		return -ENOMEM;
-
-	/*
-	 * A negative i_writecount for bdev->bd_inode means that the bdev
-	 * or one of its paritions is mounted in a user namespace. Deny
-	 * writing for non-root in this case, otherwise an unprivileged
-	 * user can attack the kernel by modifying the backing store of a
-	 * mounted filesystem.
-	 */
-	if ((filp->f_mode & FMODE_WRITE) &&
-	    !file_ns_capable(filp, &init_user_ns, CAP_SYS_ADMIN) &&
-	    !atomic_inc_unless_negative(&bdev->bd_inode->i_writecount)) {
-		bdput(bdev);
-		return -EBUSY;
-	}
 
 	filp->f_mapping = bdev->bd_inode->i_mapping;
 
@@ -1652,9 +1624,6 @@ EXPORT_SYMBOL(blkdev_put);
 static int blkdev_close(struct inode * inode, struct file * filp)
 {
 	struct block_device *bdev = I_BDEV(filp->f_mapping->host);
-	if (filp->f_mode & FMODE_WRITE &&
-	    !file_ns_capable(filp, &init_user_ns, CAP_SYS_ADMIN))
-		atomic_dec(&bdev->bd_inode->i_writecount);
 	blkdev_put(bdev, filp->f_mode);
 	return 0;
 }
@@ -1788,14 +1757,12 @@ EXPORT_SYMBOL(ioctl_by_bdev);
 /**
  * lookup_bdev  - lookup a struct block_device by name
  * @pathname:	special file representing the block device
- * @mask:	rights to check for (%MAY_READ, %MAY_WRITE, %MAY_EXEC)
  *
  * Get a reference to the blockdevice at @pathname in the current
  * namespace if possible and return it.  Return ERR_PTR(error)
- * otherwise.  If @mask is non-zero, check for access rights to the
- * inode at @pathname.
+ * otherwise.
  */
-struct block_device *lookup_bdev(const char *pathname, int mask)
+struct block_device *lookup_bdev(const char *pathname)
 {
 	struct block_device *bdev;
 	struct inode *inode;
@@ -1810,11 +1777,6 @@ struct block_device *lookup_bdev(const char *pathname, int mask)
 		return ERR_PTR(error);
 
 	inode = d_backing_inode(path.dentry);
-	if (mask != 0 && !capable(CAP_SYS_ADMIN)) {
-		error = __inode_permission(inode, mask);
-		if (error)
-			goto fail;
-	}
 	error = -ENOTBLK;
 	if (!S_ISBLK(inode->i_mode))
 		goto fail;

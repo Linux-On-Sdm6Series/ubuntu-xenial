@@ -93,7 +93,7 @@ static int max_requests = IBMVSCSI_MAX_REQUESTS_DEFAULT;
 static int max_events = IBMVSCSI_MAX_REQUESTS_DEFAULT + 2;
 static int fast_fail = 1;
 static int client_reserve = 1;
-static char partition_name[96] = "UNKNOWN";
+static char partition_name[97] = "UNKNOWN";
 static unsigned int partition_number = -1;
 
 static struct scsi_transport_template *ibmvscsi_transport_template;
@@ -261,7 +261,7 @@ static void gather_partition_info(void)
 
 	ppartition_name = of_get_property(rootdn, "ibm,partition-name", NULL);
 	if (ppartition_name)
-		strlcpy(partition_name, ppartition_name,
+		strncpy(partition_name, ppartition_name,
 				sizeof(partition_name));
 	p_number_ptr = of_get_property(rootdn, "ibm,partition-no", NULL);
 	if (p_number_ptr)
@@ -2041,7 +2041,7 @@ static ssize_t show_host_partition_number(struct device *dev,
 	int len;
 
 	len = snprintf(buf, PAGE_SIZE, "%d\n",
-		       be32_to_cpu(hostdata->madapter_info.partition_number));
+		       hostdata->madapter_info.partition_number);
 	return len;
 }
 
@@ -2061,7 +2061,7 @@ static ssize_t show_host_mad_version(struct device *dev,
 	int len;
 
 	len = snprintf(buf, PAGE_SIZE, "%d\n",
-		       be32_to_cpu(hostdata->madapter_info.mad_version));
+		       hostdata->madapter_info.mad_version);
 	return len;
 }
 
@@ -2080,8 +2080,7 @@ static ssize_t show_host_os_type(struct device *dev,
 	struct ibmvscsi_host_data *hostdata = shost_priv(shost);
 	int len;
 
-	len = snprintf(buf, PAGE_SIZE, "%d\n",
-		       be32_to_cpu(hostdata->madapter_info.os_type));
+	len = snprintf(buf, PAGE_SIZE, "%d\n", hostdata->madapter_info.os_type);
 	return len;
 }
 

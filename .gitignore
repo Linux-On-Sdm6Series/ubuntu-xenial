@@ -55,12 +55,7 @@ Module.symvers
 #
 # Debian directory (make deb-pkg)
 #
-#/debian/
-
-#
-# Snap directory (make snap-pkg)
-#
-/snap/
+/debian/
 
 #
 # tar directory (make tar*-pkg)
@@ -118,3 +113,6 @@ all.config
 
 # Kdevelop4
 *.kdev4
+
+# fetched Android config fragments
+android/configs/android-*.cfg

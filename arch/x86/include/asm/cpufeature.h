@@ -21,8 +21,8 @@ enum cpuid_leafs
 	CPUID_LNX_3,
 	CPUID_7_0_EBX,
 	CPUID_D_1_EAX,
-	CPUID_LNX_4,
-	CPUID_DUMMY,
+	CPUID_F_0_EDX,
+	CPUID_F_1_EDX,
 	CPUID_8000_0008_EBX,
 	CPUID_6_EAX,
 	CPUID_8000_000A_EDX,
@@ -57,7 +57,7 @@ extern const char * const x86_bug_flags[NBUGINTS*32];
  * (1UL<<((bit)&31) gives us a mask for the feature_bit so we can
  * see if it is set in the mask word.
  */
-#define CHECK_BIT_IN_MASK_WORD(maskname, word, bit)    \
+#define CHECK_BIT_IN_MASK_WORD(maskname, word, bit)	\
 	(((bit)>>5)==(word) && (1UL<<((bit)&31) & maskname##word ))
 
 #define REQUIRED_MASK_BIT_SET(feature_bit)		\

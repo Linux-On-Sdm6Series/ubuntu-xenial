@@ -57,8 +57,6 @@ static DEFINE_IDA(rproc_dev_index);
 
 static const char * const rproc_crash_names[] = {
 	[RPROC_MMUFAULT]	= "mmufault",
-	[RPROC_WATCHDOG]	= "watchdog",
-	[RPROC_FATAL_ERROR]	= "fatal error",
 };
 
 /* translate rproc_crash_type to string */
@@ -791,8 +789,6 @@ static void rproc_resource_cleanup(struct rproc *rproc)
 	}
 }
 
-static int __rproc_fw_config_virtio(struct rproc *rproc, const struct firmware *fw);
-
 /*
  * take a firmware and boot a remote processor with it.
  */
@@ -803,15 +799,12 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	struct resource_table *table, *loaded_table;
 	int ret, tablesz;
 
+	if (!rproc->table_ptr)
+		return -ENOMEM;
+
 	ret = rproc_fw_sanity_check(rproc, fw);
 	if (ret)
 		return ret;
-
-	if (!rproc->table_ptr) {
-		ret = __rproc_fw_config_virtio(rproc, fw);
-		if (ret)
-			return ret;
-	}
 
 	dev_info(dev, "Booting fw image %s, size %zd\n", name, fw->size);
 
@@ -861,8 +854,12 @@ static int rproc_fw_boot(struct rproc *rproc, const struct firmware *fw)
 	 * copy this information to device memory.
 	 */
 	loaded_table = rproc_find_loaded_rsc_table(rproc, fw);
-	if (loaded_table)
-		memcpy(loaded_table, rproc->cached_table, tablesz);
+	if (!loaded_table) {
+		ret = -EINVAL;
+		goto clean_up;
+	}
+
+	memcpy(loaded_table, rproc->cached_table, tablesz);
 
 	/* power up the remote processor */
 	ret = rproc->ops->start(rproc);
@@ -898,15 +895,19 @@ clean_up:
  * to unregister the device. one other option is just to use kref here,
  * that might be cleaner).
  */
-static int __rproc_fw_config_virtio(struct rproc *rproc, const struct firmware *fw)
+static void rproc_fw_config_virtio(const struct firmware *fw, void *context)
 {
+	struct rproc *rproc = context;
 	struct resource_table *table;
 	int ret, tablesz;
+
+	if (rproc_fw_sanity_check(rproc, fw) < 0)
+		goto out;
 
 	/* look for the resource table */
 	table = rproc_find_rsc_table(rproc, fw,  &tablesz);
 	if (!table)
-		return -EINVAL;
+		goto out;
 
 	rproc->table_csum = crc32(0, table, tablesz);
 
@@ -918,7 +919,7 @@ static int __rproc_fw_config_virtio(struct rproc *rproc, const struct firmware *
 	 */
 	rproc->cached_table = kmemdup(table, tablesz, GFP_KERNEL);
 	if (!rproc->cached_table)
-		return -ENOMEM;
+		goto out;
 
 	rproc->table_ptr = rproc->cached_table;
 
@@ -927,21 +928,12 @@ static int __rproc_fw_config_virtio(struct rproc *rproc, const struct firmware *
 	ret = rproc_handle_resources(rproc, tablesz,
 				     rproc_count_vrings_handler);
 	if (ret)
-		return ret;
+		goto out;
 
 	/* look for virtio devices and register them */
 	ret = rproc_handle_resources(rproc, tablesz, rproc_vdev_handler);
 
-	return ret;
-}
-
-static void rproc_fw_config_virtio(const struct firmware *fw, void *context)
-{
-	struct rproc *rproc = context;
-
-	if (rproc_fw_sanity_check(rproc, fw) >= 0)
-		__rproc_fw_config_virtio(rproc, fw);
-
+out:
 	release_firmware(fw);
 	/* allow rproc_del() contexts, if any, to proceed */
 	complete_all(&rproc->firmware_loading_complete);
@@ -1485,7 +1477,7 @@ static int __init remoteproc_init(void)
 
 	return 0;
 }
-subsys_initcall(remoteproc_init);
+module_init(remoteproc_init);
 
 static void __exit remoteproc_exit(void)
 {

@@ -23,7 +23,6 @@
 #include <linux/module.h>
 #include <linux/acpi.h>
 #include <linux/interrupt.h>
-#include <linux/irq.h>
 #include <linux/miscdevice.h>
 
 struct smo8800_device {

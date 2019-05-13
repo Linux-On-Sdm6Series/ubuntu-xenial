@@ -21,7 +21,6 @@ struct dentry;
  */
 enum wb_state {
 	WB_registered,		/* bdi_register() was done */
-	WB_shutting_down,	/* wb_shutdown() in progress */
 	WB_writeback_running,	/* Writeback is in progress */
 	WB_has_dirty_io,	/* Dirty inodes on ->b_{dirty|io|more_io} */
 };
@@ -55,9 +54,7 @@ struct bdi_writeback_congested {
 	atomic_t refcnt;		/* nr of attached wb's and blkg */
 
 #ifdef CONFIG_CGROUP_WRITEBACK
-	struct backing_dev_info *__bdi;	/* the associated bdi, set to NULL
-					 * on bdi unregistration. For memcg-wb
-					 * internal use only! */
+	struct backing_dev_info *bdi;	/* the associated bdi */
 	int blkcg_id;			/* ID of the associated blkcg */
 	struct rb_node rb_node;		/* on bdi->cgwb_congestion_tree */
 #endif
@@ -145,8 +142,8 @@ struct backing_dev_info {
 	void *congested_data;	/* Pointer to aux data for congested func */
 
 	char *name;
-
 	struct kref refcnt;	/* Reference counter for the structure */
+
 	unsigned int min_ratio;
 	unsigned int max_ratio, max_prop_frac;
 
@@ -161,7 +158,7 @@ struct backing_dev_info {
 #ifdef CONFIG_CGROUP_WRITEBACK
 	struct radix_tree_root cgwb_tree; /* radix tree of active cgroup wbs */
 	struct rb_root cgwb_congested_tree; /* their congested states */
-	struct rw_semaphore wb_switch_rwsem; /* no cgwb switch while syncing */
+	atomic_t usage_cnt; /* counts both cgwbs and cgwb_contested's */
 #else
 	struct bdi_writeback_congested *wb_congested;
 #endif
@@ -230,14 +227,6 @@ static inline void wb_get(struct bdi_writeback *wb)
  */
 static inline void wb_put(struct bdi_writeback *wb)
 {
-	if (WARN_ON_ONCE(!wb->bdi)) {
-		/*
-		 * A driver bug might cause a file to be removed before bdi was
-		 * initialized.
-		 */
-		return;
-	}
-
 	if (wb != &wb->bdi->wb)
 		percpu_ref_put(&wb->refcnt);
 }

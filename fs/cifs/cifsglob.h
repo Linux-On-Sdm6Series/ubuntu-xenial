@@ -70,22 +70,8 @@
 #define SERVER_NAME_LENGTH 40
 #define SERVER_NAME_LEN_WITH_NULL     (SERVER_NAME_LENGTH + 1)
 
-/* echo interval in seconds */
-#define SMB_ECHO_INTERVAL_MIN 1
-#define SMB_ECHO_INTERVAL_MAX 600
-#define SMB_ECHO_INTERVAL_DEFAULT 60
-
-/*
- * Default number of credits to keep available for SMB3.
- * This value is chosen somewhat arbitrarily. The Windows client
- * defaults to 128 credits, the Windows server allows clients up to
- * 512 credits (or 8K for later versions), and the NetApp server
- * does not limit clients at all.  Choose a high enough default value
- * such that the client shouldn't limit performance, but allow mount
- * to override (until you approach 64K, where we limit credits to 65000
- * to reduce possibility of seeing more server credit overflow bugs.
- */
-#define SMB2_MAX_CREDITS_AVAILABLE 32000
+/* SMB echo "timeout" -- FIXME: tunable? */
+#define SMB_ECHO_INTERVAL (60 * HZ)
 
 #include "cifspdu.h"
 
@@ -136,8 +122,6 @@ struct cifs_secmech {
 	struct sdesc *sdescmd5; /* ctxt to generate cifs/smb signature */
 	struct sdesc *sdeschmacsha256;  /* ctxt to generate smb2 signature */
 	struct sdesc *sdesccmacaes;  /* ctxt to generate smb3 signature */
-	struct crypto_aead *ccmaesencrypt; /* smb3 encryption aead */
-	struct crypto_aead *ccmaesdecrypt; /* smb3 decryption aead */
 };
 
 /* per smb session structure/fields */
@@ -210,7 +194,7 @@ struct cifsInodeInfo;
 struct cifs_open_parms;
 
 struct smb_version_operations {
-	int (*send_cancel)(struct TCP_Server_Info *, struct smb_rqst *,
+	int (*send_cancel)(struct TCP_Server_Info *, void *,
 			   struct mid_q_entry *);
 	bool (*compare_fids)(struct cifsFileInfo *, struct cifsFileInfo *);
 	/* setup request: allocate mid, sign message */
@@ -241,7 +225,7 @@ struct smb_version_operations {
 	void (*print_stats)(struct seq_file *m, struct cifs_tcon *);
 	void (*dump_share_caps)(struct seq_file *, struct cifs_tcon *);
 	/* verify the message */
-	int (*check_message)(char *, unsigned int, struct TCP_Server_Info *);
+	int (*check_message)(char *, unsigned int);
 	bool (*is_oplock_break)(char *, struct TCP_Server_Info *);
 	int (*handle_cancelled_mid)(char *, struct TCP_Server_Info *);
 	void (*downgrade_oplock)(struct TCP_Server_Info *,
@@ -436,14 +420,6 @@ struct smb_version_operations {
 	bool (*dir_needs_close)(struct cifsFileInfo *);
 	long (*fallocate)(struct file *, struct cifs_tcon *, int, loff_t,
 			  loff_t);
-	/* init transform request - used for encryption for now */
-	int (*init_transform_rq)(struct TCP_Server_Info *, struct smb_rqst *,
-				 struct smb_rqst *);
-	/* free transform request */
-	void (*free_transform_rq)(struct smb_rqst *);
-	int (*is_transform_hdr)(void *buf);
-	int (*receive_transform)(struct TCP_Server_Info *,
-				 struct mid_q_entry **);
 };
 
 struct smb_version_values {
@@ -534,9 +510,6 @@ struct smb_vol {
 	struct sockaddr_storage dstaddr; /* destination address */
 	struct sockaddr_storage srcaddr; /* allow binding to a local IP */
 	struct nls_table *local_nls;
-	unsigned int echo_interval; /* echo interval in secs */
-	__u64 snapshot_time; /* needed for timewarp tokens */
-	unsigned int max_credits; /* smb3 max_credits 10 < credits < 60000 */
 };
 
 #define CIFS_MOUNT_MASK (CIFS_MOUNT_NO_PERM | CIFS_MOUNT_SET_UID | \
@@ -594,8 +567,7 @@ struct TCP_Server_Info {
 	bool noblocksnd;		/* use blocking sendmsg */
 	bool noautotune;		/* do not autotune send buf sizes */
 	bool tcp_nodelay;
-	unsigned int credits;  /* send no more requests at once */
-	unsigned int max_credits; /* can override large 32000 default at mnt */
+	int credits;  /* send no more requests at once */
 	unsigned int in_flight;  /* number of requests on the wire to server */
 	spinlock_t req_lock;  /* protect the two values above */
 	struct mutex srv_mutex;
@@ -643,6 +615,8 @@ struct TCP_Server_Info {
 	bool	sec_mskerberos;		/* supports legacy MS Kerberos */
 	bool	large_buf;		/* is current buffer large? */
 	struct delayed_work	echo; /* echo ping workqueue job */
+	struct kvec *iov;	/* reusable kvec array for receives */
+	unsigned int nr_iov;	/* number of kvecs in array */
 	char	*smallbuf;	/* pointer to current "small" buffer */
 	char	*bigbuf;	/* pointer to current "big" buffer */
 	unsigned int total_read; /* total amount of data read in this pass */
@@ -658,9 +632,7 @@ struct TCP_Server_Info {
 	unsigned int	max_write;
 	struct delayed_work reconnect; /* reconnect workqueue job */
 	struct mutex reconnect_mutex; /* prevent simultaneous reconnects */
-	__u8		preauth_hash[512];
 #endif /* CONFIG_CIFS_SMB2 */
-	unsigned long echo_interval;
 };
 
 static inline unsigned int
@@ -842,10 +814,7 @@ struct cifs_ses {
 	bool need_reconnect:1; /* connection reset, uid now invalid */
 #ifdef CONFIG_CIFS_SMB2
 	__u16 session_flags;
-	__u8 smb3signingkey[SMB3_SIGN_KEY_SIZE];
-	__u8 smb3encryptionkey[SMB3_SIGN_KEY_SIZE];
-	__u8 smb3decryptionkey[SMB3_SIGN_KEY_SIZE];
-	__u8 preauth_hash[512];
+	char smb3signingkey[SMB3_SIGN_KEY_SIZE]; /* for signing smb3 packets */
 #endif /* CONFIG_CIFS_SMB2 */
 };
 
@@ -945,7 +914,6 @@ struct cifs_tcon {
 	__u32 maximal_access;
 	__u32 vol_serial_number;
 	__le64 vol_create_time;
-	__u64 snapshot_time; /* for timewarp tokens - timestamp of snapshot */
 	__u32 ss_flags;		/* sector size flags */
 	__u32 perf_sector_size; /* best sector size for perf */
 	__u32 max_chunks;
@@ -1124,10 +1092,7 @@ struct cifs_readdata {
 	int (*read_into_pages)(struct TCP_Server_Info *server,
 				struct cifs_readdata *rdata,
 				unsigned int len);
-	int (*copy_into_pages)(struct TCP_Server_Info *server,
-				struct cifs_readdata *rdata,
-				struct iov_iter *iter);
-	struct kvec			iov[2];
+	struct kvec			iov;
 	unsigned int			pagesz;
 	unsigned int			tailsz;
 	unsigned int			credits;
@@ -1187,11 +1152,6 @@ void cifsFileInfo_put(struct cifsFileInfo *cifs_file);
 struct cifsInodeInfo {
 	bool can_cache_brlcks;
 	struct list_head llist;	/* locks helb by this inode */
-	/*
-	 * NOTE: Some code paths call down_read(lock_sem) twice, so
-	 * we must always use use cifs_down_write() instead of down_write()
-	 * for this semaphore to avoid deadlocks.
-	 */
 	struct rw_semaphore lock_sem;	/* protect the fields above */
 	/* BB add in lists for dirty pages i.e. write caching info for oplock */
 	struct list_head openFileList;
@@ -1315,13 +1275,6 @@ typedef int (mid_receive_t)(struct TCP_Server_Info *server,
  */
 typedef void (mid_callback_t)(struct mid_q_entry *mid);
 
-/*
- * This is the protopyte for mid handle function. This is called once the mid
- * has been recognized after decryption of the message.
- */
-typedef int (mid_handle_t)(struct TCP_Server_Info *server,
-			    struct mid_q_entry *mid);
-
 /* one of these for every pending CIFS request to the server */
 struct mid_q_entry {
 	struct list_head qhead;	/* mids waiting on reply from this server */
@@ -1336,7 +1289,6 @@ struct mid_q_entry {
 #endif
 	mid_receive_t *receive; /* call receive callback */
 	mid_callback_t *callback; /* call completion callback */
-	mid_handle_t *handle; /* call handle mid callback */
 	void *callback_data;	  /* general purpose pointer for callback */
 	void *resp_buf;		/* pointer to received SMB header */
 	int mid_state;	/* wish this were enum but can not pass to wait_event */
@@ -1345,7 +1297,6 @@ struct mid_q_entry {
 	bool large_buf:1;	/* if valid response, is pointer to large buf */
 	bool multiRsp:1;	/* multiple trans2 responses for one request  */
 	bool multiEnd:1;	/* both received */
-	bool decrypted:1;	/* decrypted entry */
 };
 
 struct close_cancelled_open {
@@ -1507,9 +1458,7 @@ static inline void free_dfs_info_array(struct dfs_info3_param *param,
 #define   CIFS_OBREAK_OP   0x0100    /* oplock break request */
 #define   CIFS_NEG_OP      0x0200    /* negotiate request */
 #define   CIFS_OP_MASK     0x0380    /* mask request type */
-
 #define   CIFS_HAS_CREDITS 0x0400    /* already has credits */
-#define   CIFS_TRANSFORM_REQ 0x0800    /* transform request before sending */
 
 /* Security Flags: indicate type of session setup needed */
 #define   CIFSSEC_MAY_SIGN	0x00001

@@ -5,7 +5,6 @@
 #include <asm/page_types.h>
 #include <asm/msr.h>
 #include <asm/asm-offsets.h>
-#include <asm/nospec-branch.h>
 
 # Copyright 2003 Pavel Machek <pavel@suse.cz>, distribute under GPLv2
 
@@ -33,7 +32,6 @@ ENTRY(wakeup_long64)
 	movq	saved_rbp, %rbp
 
 	movq	saved_rip, %rax
-	ANNOTATE_RETPOLINE_SAFE
 	jmp	*%rax
 ENDPROC(wakeup_long64)
 
@@ -108,6 +106,15 @@ ENTRY(do_suspend_lowlevel)
 	movq	pt_regs_r13(%rax), %r13
 	movq	pt_regs_r14(%rax), %r14
 	movq	pt_regs_r15(%rax), %r15
+
+#ifdef CONFIG_KASAN
+	/*
+	 * The suspend path may have poisoned some areas deeper in the stack,
+	 * which we now need to unpoison.
+	 */
+	movq	%rsp, %rdi
+	call	kasan_unpoison_task_stack_below
+#endif
 
 	xorl	%eax, %eax
 	addq	$8, %rsp

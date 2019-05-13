@@ -53,6 +53,16 @@
 
 static const struct hci_uart_proto *hup[HCI_UART_MAX_PROTO];
 
+static inline void hci_uart_proto_lock(struct hci_uart *hu)
+{
+	mutex_lock(&hu->proto_lock);
+}
+
+static inline void hci_uart_proto_unlock(struct hci_uart *hu)
+{
+	mutex_unlock(&hu->proto_lock);
+}
+
 int hci_uart_register_proto(const struct hci_uart_proto *p)
 {
 	if (p->id >= HCI_UART_MAX_PROTO)
@@ -113,8 +123,15 @@ static inline struct sk_buff *hci_uart_dequeue(struct hci_uart *hu)
 {
 	struct sk_buff *skb = hu->tx_skb;
 
-	if (!skb)
+	if (!skb) {
+		hci_uart_proto_lock(hu);
+		if (!hu->proto) {
+			hci_uart_proto_unlock(hu);
+			return NULL;
+		}
 		skb = hu->proto->dequeue(hu);
+		hci_uart_proto_unlock(hu);
+	}
 	else
 		hu->tx_skb = NULL;
 
@@ -141,6 +158,8 @@ static void hci_uart_write_work(struct work_struct *work)
 	struct tty_struct *tty = hu->tty;
 	struct hci_dev *hdev = hu->hdev;
 	struct sk_buff *skb;
+
+	BT_DBG("hu %pK hdev %pK tty %pK", hu, hdev, tty);
 
 	/* REVISIT: should we cope with bad skbs or ->write() returning
 	 * and error value ?
@@ -205,7 +224,7 @@ int hci_uart_init_ready(struct hci_uart *hu)
 /* Initialize device */
 static int hci_uart_open(struct hci_dev *hdev)
 {
-	BT_DBG("%s %p", hdev->name, hdev);
+	BT_DBG("%s %pK", hdev->name, hdev);
 
 	/* Nothing to do for UART driver */
 	return 0;
@@ -217,7 +236,7 @@ static int hci_uart_flush(struct hci_dev *hdev)
 	struct hci_uart *hu  = hci_get_drvdata(hdev);
 	struct tty_struct *tty = hu->tty;
 
-	BT_DBG("hdev %p tty %p", hdev, tty);
+	BT_DBG("hdev %pK tty %pK", hdev, tty);
 
 	if (hu->tx_skb) {
 		kfree_skb(hu->tx_skb); hu->tx_skb = NULL;
@@ -227,7 +246,7 @@ static int hci_uart_flush(struct hci_dev *hdev)
 	tty_ldisc_flush(tty);
 	tty_driver_flush_buffer(tty);
 
-	if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	if (test_bit(HCI_UART_PROTO_SET, &hu->flags))
 		hu->proto->flush(hu);
 
 	return 0;
@@ -236,7 +255,7 @@ static int hci_uart_flush(struct hci_dev *hdev)
 /* Close device */
 static int hci_uart_close(struct hci_dev *hdev)
 {
-	BT_DBG("hdev %p", hdev);
+	BT_DBG("hdev %pK", hdev);
 
 	hci_uart_flush(hdev);
 	hdev->flush = NULL;
@@ -255,15 +274,6 @@ static int hci_uart_send_frame(struct hci_dev *hdev, struct sk_buff *skb)
 	hci_uart_tx_wakeup(hu);
 
 	return 0;
-}
-
-/* Check the underlying device or tty has flow control support */
-bool hci_uart_has_flow_control(struct hci_uart *hu)
-{
-	if (hu->tty->driver->ops->tiocmget && hu->tty->driver->ops->tiocmset)
-		return true;
-
-	return false;
 }
 
 /* Flow control or un-flow control the device */
@@ -450,7 +460,7 @@ static int hci_uart_tty_open(struct tty_struct *tty)
 {
 	struct hci_uart *hu;
 
-	BT_DBG("tty %p", tty);
+	BT_DBG("tty %pK", tty);
 
 	/* Error if the tty has no write op instead of leaving an exploitable
 	   hole */
@@ -469,6 +479,9 @@ static int hci_uart_tty_open(struct tty_struct *tty)
 
 	INIT_WORK(&hu->init_ready, hci_uart_init_work);
 	INIT_WORK(&hu->write_work, hci_uart_write_work);
+
+	spin_lock_init(&hu->rx_lock);
+	mutex_init(&hu->proto_lock);
 
 	/* Flush any pending characters in the driver and line discipline. */
 
@@ -492,7 +505,7 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 	struct hci_uart *hu = tty->disc_data;
 	struct hci_dev *hdev;
 
-	BT_DBG("tty %p", tty);
+	BT_DBG("tty %pK", tty);
 
 	/* Detach from the tty */
 	tty->disc_data = NULL;
@@ -501,21 +514,31 @@ static void hci_uart_tty_close(struct tty_struct *tty)
 		return;
 
 	hdev = hu->hdev;
-	if (hdev)
+	if (hdev) {
 		hci_uart_close(hdev);
+		if (test_bit(HCI_UART_REGISTERED, &hu->flags))
+			hci_unregister_dev(hdev);
+	}
 
 	cancel_work_sync(&hu->write_work);
 
-	if (test_and_clear_bit(HCI_UART_PROTO_READY, &hu->flags)) {
+	if (test_and_clear_bit(HCI_UART_PROTO_SET, &hu->flags)) {
 		if (hdev) {
 			if (test_bit(HCI_UART_REGISTERED, &hu->flags))
 				hci_unregister_dev(hdev);
 			hci_free_dev(hdev);
 		}
+		hci_uart_proto_lock(hu);
 		hu->proto->close(hu);
+		hu->proto = NULL;
+		hci_uart_proto_unlock(hu);
 	}
-	clear_bit(HCI_UART_PROTO_SET, &hu->flags);
 
+	cancel_work_sync(&hu->write_work);
+
+	if (hdev)
+		hci_free_dev(hdev);
+	mutex_destroy(&hu->proto_lock);
 	kfree(hu);
 }
 
@@ -541,7 +564,7 @@ static void hci_uart_tty_wakeup(struct tty_struct *tty)
 	if (tty != hu->tty)
 		return;
 
-	if (test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	if (test_bit(HCI_UART_PROTO_SET, &hu->flags))
 		hci_uart_tx_wakeup(hu);
 }
 
@@ -565,7 +588,7 @@ static void hci_uart_tty_receive(struct tty_struct *tty, const u8 *data,
 	if (!hu || tty != hu->tty)
 		return;
 
-	if (!test_bit(HCI_UART_PROTO_READY, &hu->flags))
+	if (!test_bit(HCI_UART_PROTO_SET, &hu->flags))
 		return;
 
 	/* It does not need a lock here as it is already protected by a mutex in
@@ -660,7 +683,6 @@ static int hci_uart_set_proto(struct hci_uart *hu, int id)
 		return err;
 	}
 
-	set_bit(HCI_UART_PROTO_READY, &hu->flags);
 	return 0;
 }
 

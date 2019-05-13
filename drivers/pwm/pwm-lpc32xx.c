@@ -41,9 +41,9 @@ static int lpc32xx_pwm_config(struct pwm_chip *chip, struct pwm_device *pwm,
 	/* The highest acceptable divisor is 256, which is represented by 0 */
 	period_cycles = div64_u64(c * period_ns,
 			       (unsigned long long)NSEC_PER_SEC * 256);
-	if (!period_cycles || period_cycles > 256)
-		return -ERANGE;
-	if (period_cycles == 256)
+	if (!period_cycles)
+		period_cycles = 1;
+	if (period_cycles > 255)
 		period_cycles = 0;
 
 	/* Compute 256 x #duty/period value and care for corner cases */
@@ -68,7 +68,7 @@ static int lpc32xx_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 	u32 val;
 	int ret;
 
-	ret = clk_prepare_enable(lpc32xx->clk);
+	ret = clk_enable(lpc32xx->clk);
 	if (ret)
 		return ret;
 
@@ -88,7 +88,7 @@ static void lpc32xx_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	val &= ~PWM_ENABLE;
 	writel(val, lpc32xx->base + (pwm->hwpwm << 2));
 
-	clk_disable_unprepare(lpc32xx->clk);
+	clk_disable(lpc32xx->clk);
 }
 
 static const struct pwm_ops lpc32xx_pwm_ops = {

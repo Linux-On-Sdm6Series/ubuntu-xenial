@@ -46,8 +46,6 @@
 #include <linux/mutex.h>
 #include <linux/slab.h>
 
-#include <linux/nospec.h>
-
 #include <asm/uaccess.h>
 
 #include <rdma/ib.h>
@@ -1117,7 +1115,6 @@ static ssize_t ib_ucm_write(struct file *filp, const char __user *buf,
 
 	if (hdr.cmd >= ARRAY_SIZE(ucm_cmd_table))
 		return -EINVAL;
-	hdr.cmd = array_index_nospec(hdr.cmd, ARRAY_SIZE(ucm_cmd_table));
 
 	if (hdr.in + sizeof(hdr) > len)
 		return -EINVAL;
@@ -1351,11 +1348,6 @@ static int __init ib_ucm_init(void)
 		printk(KERN_ERR "ucm: couldn't register client\n");
 		goto error3;
 	}
-
-	printk(KERN_ERR "ucm: This module is DEPRECATED and can expose your\n");
-	printk(KERN_ERR "ucm: system to attacks! Use at your own risk!!!\n");
-	add_taint(TAINT_FORCED_MODULE, LOCKDEP_STILL_OK);
-
 	return 0;
 
 error3:

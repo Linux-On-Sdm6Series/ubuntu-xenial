@@ -19,9 +19,6 @@
 #include <linux/io.h>
 #include <linux/serial_core.h>
 #include <linux/sizes.h>
-#include <linux/mod_devicetable.h>
-#include <linux/of_fdt.h>
-#include <linux/acpi.h>
 
 #ifdef CONFIG_FIX_EARLYCON_MEM
 #include <asm/fixmap.h>
@@ -38,13 +35,6 @@ static struct console early_con = {
 static struct earlycon_device early_console_dev = {
 	.con = &early_con,
 };
-
-extern struct earlycon_id __earlycon_table[];
-static const struct earlycon_id __earlycon_table_sentinel
-	__used __section(__earlycon_table_end);
-
-static const struct of_device_id __earlycon_of_table_sentinel
-	__used __section(__earlycon_of_table_end);
 
 static void __iomem * __init earlycon_map(unsigned long paddr, size_t size)
 {
@@ -161,7 +151,7 @@ int __init setup_earlycon(char *buf)
 	if (early_con.flags & CON_ENABLED)
 		return -EALREADY;
 
-	for (match = __earlycon_table; match->name[0]; match++) {
+	for (match = __earlycon_table; match < __earlycon_table_end; match++) {
 		size_t len = strlen(match->name);
 
 		if (strncmp(buf, match->name, len))
@@ -180,14 +170,6 @@ int __init setup_earlycon(char *buf)
 	return -ENOENT;
 }
 
-/*
- * When CONFIG_ACPI_SPCR_TABLE is defined, "earlycon" without parameters in
- * command line does not start DT earlycon immediately, instead it defers
- * starting it until DT/ACPI decision is made.  At that time if ACPI is enabled
- * call parse_spcr(), else call early_init_dt_scan_chosen_stdout()
- */
-bool earlycon_init_is_deferred __initdata;
-
 /* early_param wrapper for setup_earlycon() */
 static int __init param_setup_earlycon(char *buf)
 {
@@ -197,14 +179,8 @@ static int __init param_setup_earlycon(char *buf)
 	 * Just 'earlycon' is a valid param for devicetree earlycons;
 	 * don't generate a warning from parse_early_params() in that case
 	 */
-	if (!buf || !buf[0]) {
-		if (IS_ENABLED(CONFIG_ACPI_SPCR_TABLE)) {
-			earlycon_init_is_deferred = true;
-			return 0;
-		} else {
-			return early_init_dt_scan_chosen_stdout();
-		}
-	}
+	if (!buf || !buf[0])
+		return 0;
 
 	err = setup_earlycon(buf);
 	if (err == -ENOENT || err == -EALREADY)

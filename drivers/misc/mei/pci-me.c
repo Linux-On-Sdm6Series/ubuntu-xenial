@@ -40,9 +40,6 @@
 #include "hw-me-regs.h"
 #include "hw-me.h"
 
-static bool disable_msi;
-module_param(disable_msi, bool, 0);
-
 /* mei_pci_tbl - PCI Device ID Table */
 static const struct pci_device_id mei_me_pci_tbl[] = {
 	{MEI_PCI_DEVICE(MEI_DEV_ID_82946GZ, mei_me_legacy_cfg)},
@@ -193,8 +190,7 @@ static int mei_me_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		err = -ENOMEM;
 		goto free_device;
 	}
-	if (!disable_msi)
-		pci_enable_msi(pdev);
+	pci_enable_msi(pdev);
 
 	 /* request and enable interrupt */
 	irqflags = pci_dev_msi_enabled(pdev) ? IRQF_ONESHOT : IRQF_SHARED;
@@ -234,11 +230,8 @@ static int mei_me_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	if (!pci_dev_run_wake(pdev))
 		mei_me_set_pm_domain(dev);
 
-	if (mei_pg_is_enabled(dev)) {
+	if (mei_pg_is_enabled(dev))
 		pm_runtime_put_noidle(&pdev->dev);
-		if (hw->d0i3_supported)
-			pm_runtime_allow(&pdev->dev);
-	}
 
 	dev_dbg(&pdev->dev, "initialization successful.\n");
 

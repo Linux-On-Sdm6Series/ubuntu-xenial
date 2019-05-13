@@ -26,7 +26,6 @@
 #include <linux/mdio.h>
 #include <linux/usb/cdc.h>
 #include <linux/suspend.h>
-#include <linux/acpi.h>
 
 /* Information for net-next */
 #define NETNEXT_VERSION		"08"
@@ -456,11 +455,6 @@
 /* SRAM_IMPEDANCE */
 #define RX_DRIVING_MASK		0x6000
 
-/* MAC PASSTHRU */
-#define AD_MASK			0xfee0
-#define EFUSE			0xcfdb
-#define PASS_THRU_MASK		0x1
-
 enum rtl_register_content {
 	_1000bps	= 0x10,
 	_100bps		= 0x08,
@@ -506,7 +500,6 @@ enum rtl8152_flags {
 	SELECTIVE_SUSPEND,
 	PHY_RESET,
 	SCHEDULE_NAPI,
-	DELL_TB_RX_AGG_BUG,
 };
 
 /* Define these values to match your device */
@@ -678,11 +671,8 @@ int get_registers(struct r8152 *tp, u16 value, u16 index, u16 size, void *data)
 	ret = usb_control_msg(tp->udev, usb_rcvctrlpipe(tp->udev, 0),
 			      RTL8152_REQ_GET_REGS, RTL8152_REQT_READ,
 			      value, index, tmp, size, 500);
-	if (ret < 0)
-		memset(data, 0xff, size);
-	else
-		memcpy(data, tmp, size);
 
+	memcpy(data, tmp, size);
 	kfree(tmp);
 
 	return ret;
@@ -1041,65 +1031,6 @@ out1:
 	return ret;
 }
 
-/* Devices containing RTL8153-AD can support a persistent
- * host system provided MAC address.
- * Examples of this are Dell TB15 and Dell WD15 docks
- */
-static int vendor_mac_passthru_addr_read(struct r8152 *tp, struct sockaddr *sa)
-{
-	acpi_status status;
-	struct acpi_buffer buffer = { ACPI_ALLOCATE_BUFFER, NULL };
-	union acpi_object *obj;
-	int ret = -EINVAL;
-	u32 ocp_data;
-	unsigned char buf[6];
-
-	/* test for -AD variant of RTL8153 */
-	ocp_data = ocp_read_word(tp, MCU_TYPE_USB, USB_MISC_0);
-	if ((ocp_data & AD_MASK) != 0x1000)
-		return -ENODEV;
-
-	/* test for MAC address pass-through bit */
-	ocp_data = ocp_read_byte(tp, MCU_TYPE_USB, EFUSE);
-	if ((ocp_data & PASS_THRU_MASK) != 1)
-		return -ENODEV;
-
-	/* returns _AUXMAC_#AABBCCDDEEFF# */
-	status = acpi_evaluate_object(NULL, "\\_SB.AMAC", NULL, &buffer);
-	obj = (union acpi_object *)buffer.pointer;
-	if (!ACPI_SUCCESS(status))
-		return -ENODEV;
-	if (obj->type != ACPI_TYPE_BUFFER || obj->string.length != 0x17) {
-		netif_warn(tp, probe, tp->netdev,
-			   "Invalid buffer when reading pass-thru MAC addr: "
-			   "(%d, %d)\n",
-			   obj->type, obj->string.length);
-		goto amacout;
-	}
-	if (strncmp(obj->string.pointer, "_AUXMAC_#", 9) != 0 ||
-	    strncmp(obj->string.pointer + 0x15, "#", 1) != 0) {
-		netif_warn(tp, probe, tp->netdev,
-			   "Invalid header when reading pass-thru MAC addr\n");
-		goto amacout;
-	}
-	ret = hex2bin(buf, obj->string.pointer + 9, 6);
-	if (!(ret == 0 && is_valid_ether_addr(buf))) {
-		netif_warn(tp, probe, tp->netdev,
-			   "Invalid MAC when reading pass-thru MAC addr: "
-			   "%d, %pM\n", ret, buf);
-		ret = -EINVAL;
-		goto amacout;
-	}
-	memcpy(sa->sa_data, buf, 6);
-	ether_addr_copy(tp->netdev->dev_addr, sa->sa_data);
-	netif_info(tp, probe, tp->netdev,
-		   "Using pass-thru MAC addr %pM\n", sa->sa_data);
-
-amacout:
-	kfree(obj);
-	return ret;
-}
-
 static int set_ethernet_addr(struct r8152 *tp)
 {
 	struct net_device *dev = tp->netdev;
@@ -1108,15 +1039,8 @@ static int set_ethernet_addr(struct r8152 *tp)
 
 	if (tp->version == RTL_VER_01)
 		ret = pla_ocp_read(tp, PLA_IDR, 8, sa.sa_data);
-	else {
-		/* if this is not an RTL8153-AD, no eFuse mac pass thru set,
-		 * or system doesn't provide valid _SB.AMAC this will be
-		 * be expected to non-zero
-		 */
-		ret = vendor_mac_passthru_addr_read(tp, &sa);
-		if (ret < 0)
-			ret = pla_ocp_read(tp, PLA_BACKUP, 8, sa.sa_data);
-	}
+	else
+		ret = pla_ocp_read(tp, PLA_BACKUP, 8, sa.sa_data);
 
 	if (ret < 0) {
 		netif_err(tp, probe, dev, "Get ether addr fail\n");
@@ -1691,9 +1615,6 @@ static int r8152_tx_agg_fill(struct r8152 *tp, struct tx_agg *agg)
 		dev_kfree_skb_any(skb);
 
 		remain = agg_buf_sz - (int)(tx_agg_align(tx_data) - agg->head);
-
-		if (test_bit(DELL_TB_RX_AGG_BUG, &tp->flags))
-			break;
 	}
 
 	if (!skb_queue_empty(&skb_head)) {
@@ -2814,9 +2735,6 @@ static void r8153_first_init(struct r8152 *tp)
 	/* rx aggregation */
 	ocp_data = ocp_read_word(tp, MCU_TYPE_USB, USB_USB_CTRL);
 	ocp_data &= ~(RX_AGG_DISABLE | RX_ZERO_EN);
-	if (test_bit(DELL_TB_RX_AGG_BUG, &tp->flags))
-		ocp_data |= RX_AGG_DISABLE;
-
 	ocp_write_word(tp, MCU_TYPE_USB, USB_USB_CTRL, ocp_data);
 }
 
@@ -3407,20 +3325,14 @@ static void r8153_init(struct r8152 *tp)
 		if (ocp_read_word(tp, MCU_TYPE_PLA, PLA_BOOT_CTRL) &
 		    AUTOLOAD_DONE)
 			break;
-
 		msleep(20);
-		if (test_bit(RTL8152_UNPLUG, &tp->flags))
-			break;
 	}
 
 	for (i = 0; i < 500; i++) {
 		ocp_data = ocp_reg_read(tp, OCP_PHY_STATUS) & PHY_STAT_MASK;
 		if (ocp_data == PHY_STAT_LAN_ON || ocp_data == PHY_STAT_PWRDN)
 			break;
-
 		msleep(20);
-		if (test_bit(RTL8152_UNPLUG, &tp->flags))
-			break;
 	}
 
 	usb_disable_lpm(tp->udev);
@@ -3750,9 +3662,6 @@ static int rtl8152_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 
 	if (!rtl_can_wakeup(tp))
 		return -EOPNOTSUPP;
-
-	if (wol->wolopts & ~WAKE_ANY)
-		return -EINVAL;
 
 	ret = usb_autopm_get_interface(tp->intf);
 	if (ret < 0)
@@ -4328,9 +4237,6 @@ static int rtl8152_probe(struct usb_interface *intf,
 		return -ENODEV;
 	}
 
-	if (intf->cur_altsetting->desc.bNumEndpoints < 3)
-		return -ENODEV;
-
 	usb_reset_device(udev);
 	netdev = alloc_etherdev(sizeof(struct r8152));
 	if (!netdev) {
@@ -4374,12 +4280,6 @@ static int rtl8152_probe(struct usb_interface *intf,
 		netdev->hw_features &= ~NETIF_F_RXCSUM;
 	}
 
-	if (le16_to_cpu(udev->descriptor.bcdDevice) == 0x3011 &&
-	    udev->serial && !strcmp(udev->serial, "000001000000")) {
-		dev_info(&udev->dev, "Dell TB16 Dock, disable RX aggregation");
-		set_bit(DELL_TB_RX_AGG_BUG, &tp->flags);
-	}
-
 	netdev->ethtool_ops = &ops;
 	netif_set_gso_max_size(netdev, RTL_LIMITED_TSO_SIZE);
 
@@ -4404,11 +4304,6 @@ static int rtl8152_probe(struct usb_interface *intf,
 
 	intf->needs_remote_wakeup = 1;
 
-	if (!rtl_can_wakeup(tp))
-		__rtl_set_wol(tp, 0);
-	else
-		tp->saved_wolopts = __rtl_get_wol(tp);
-
 	tp->rtl_ops.init(tp);
 	set_ethernet_addr(tp);
 
@@ -4421,6 +4316,10 @@ static int rtl8152_probe(struct usb_interface *intf,
 		goto out1;
 	}
 
+	if (!rtl_can_wakeup(tp))
+		__rtl_set_wol(tp, 0);
+
+	tp->saved_wolopts = __rtl_get_wol(tp);
 	if (tp->saved_wolopts)
 		device_set_wakeup_enable(&udev->dev, true);
 	else
