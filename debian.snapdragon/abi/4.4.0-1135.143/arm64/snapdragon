@@ -3718,6 +3718,7 @@ EXPORT_SYMBOL vmlinux 0x0c5d3dfa	tegra_dfll_register
 EXPORT_SYMBOL vmlinux 0x0c6b59fd	jbd2_journal_release_jbd_inode
 EXPORT_SYMBOL vmlinux 0x0c6bdc3f	vme_master_read
 EXPORT_SYMBOL vmlinux 0x0c7f619a	cfg80211_check_combinations
+EXPORT_SYMBOL vmlinux 0x0c845b69	bitmap_alloc
 EXPORT_SYMBOL vmlinux 0x0c876073	bioset_free
 EXPORT_SYMBOL vmlinux 0x0ca0c882	twl6030_interrupt_mask
 EXPORT_SYMBOL vmlinux 0x0ca2b91f	unlock_new_inode
@@ -4591,6 +4592,7 @@ EXPORT_SYMBOL vmlinux 0x34871adf	drm_dp_channel_eq_ok
 EXPORT_SYMBOL vmlinux 0x3488dda4	snd_pcm_hw_constraint_mask64
 EXPORT_SYMBOL vmlinux 0x348c8bfa	mmc_cleanup_queue
 EXPORT_SYMBOL vmlinux 0x349cba85	strchr
+EXPORT_SYMBOL vmlinux 0x34a2f2a3	bitmap_zalloc
 EXPORT_SYMBOL vmlinux 0x34b57571	qcom_smem_alloc
 EXPORT_SYMBOL vmlinux 0x34d221fa	sync_inodes_sb
 EXPORT_SYMBOL vmlinux 0x34e4f169	compat_sock_common_setsockopt
@@ -7865,6 +7867,7 @@ EXPORT_SYMBOL vmlinux 0xc9b1620d	param_set_short
 EXPORT_SYMBOL vmlinux 0xc9dcfead	devm_gpiod_get_index_optional
 EXPORT_SYMBOL vmlinux 0xca0f4667	readlink_copy
 EXPORT_SYMBOL vmlinux 0xca15aa60	may_umount
+EXPORT_SYMBOL vmlinux 0xca21ebd3	bitmap_free
 EXPORT_SYMBOL vmlinux 0xca3ff2d4	of_get_named_gpio_flags
 EXPORT_SYMBOL vmlinux 0xca45dcb3	blk_init_allocated_queue
 EXPORT_SYMBOL vmlinux 0xca45efbc	drm_format_horz_chroma_subsampling
@@ -7926,7 +7929,6 @@ EXPORT_SYMBOL vmlinux 0xccadfb37	mipi_dsi_dcs_set_page_address
 EXPORT_SYMBOL vmlinux 0xccbd0579	drm_crtc_vblank_put
 EXPORT_SYMBOL vmlinux 0xccc7825b	drm_object_property_set_value
 EXPORT_SYMBOL vmlinux 0xcccd6835	neigh_parms_release
-EXPORT_SYMBOL vmlinux 0xcccfe14f	devm_ioremap_resource
 EXPORT_SYMBOL vmlinux 0xccf407c5	p9_client_link
 EXPORT_SYMBOL vmlinux 0xccf934dc	acpi_bus_register_driver
 EXPORT_SYMBOL vmlinux 0xccfdf6ff	keyring_alloc
@@ -8854,6 +8856,7 @@ EXPORT_SYMBOL vmlinux 0xf6388c56	sysctl_ip_default_ttl
 EXPORT_SYMBOL vmlinux 0xf647f673	finish_open
 EXPORT_SYMBOL vmlinux 0xf64cd442	pcie_get_mps
 EXPORT_SYMBOL vmlinux 0xf65dbfc0	qcom_rpm_bus_send_message
+EXPORT_SYMBOL vmlinux 0xf667bec1	devm_ioremap_resource
 EXPORT_SYMBOL vmlinux 0xf668ee0d	module_layout
 EXPORT_SYMBOL vmlinux 0xf6770391	mac_pton
 EXPORT_SYMBOL vmlinux 0xf6779b77	drm_atomic_helper_commit_modeset_disables
@@ -12740,7 +12743,6 @@ EXPORT_SYMBOL_GPL vmlinux 0x0cf0be92	kvm_set_memory_region
 EXPORT_SYMBOL_GPL vmlinux 0x0cfbca86	regulator_map_voltage_linear
 EXPORT_SYMBOL_GPL vmlinux 0x0d4961de	nf_log_buf_open
 EXPORT_SYMBOL_GPL vmlinux 0x0d5c0ec5	clk_register_gpio_gate
-EXPORT_SYMBOL_GPL vmlinux 0x0d61acc9	crypto_shoot_alg
 EXPORT_SYMBOL_GPL vmlinux 0x0d6897a5	blockdev_superblock
 EXPORT_SYMBOL_GPL vmlinux 0x0d696228	bdev_direct_access
 EXPORT_SYMBOL_GPL vmlinux 0x0d787752	usb_block_urb
@@ -15308,7 +15310,6 @@ EXPORT_SYMBOL_GPL vmlinux 0x8b813f2d	irq_create_fwspec_mapping
 EXPORT_SYMBOL_GPL vmlinux 0x8b84f17c	nfs_pgheader_init
 EXPORT_SYMBOL_GPL vmlinux 0x8b9bc196	dev_pm_opp_is_turbo
 EXPORT_SYMBOL_GPL vmlinux 0x8ba5afe9	HYPERVISOR_memory_op
-EXPORT_SYMBOL_GPL vmlinux 0x8ba854ac	ahci_em_messages
 EXPORT_SYMBOL_GPL vmlinux 0x8bb8d872	tty_wakeup
 EXPORT_SYMBOL_GPL vmlinux 0x8bdb2e10	skb_to_sgvec_nomark
 EXPORT_SYMBOL_GPL vmlinux 0x8be4c09e	fuse_do_ioctl
